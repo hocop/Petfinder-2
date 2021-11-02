@@ -1,0 +1,16 @@
+.vscode
+wandb
+*logs
+*__pycache__
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+*.jpg
+pred*.txt
+dist
+*.egg-info
+build
+onnx_output
+saved_model
