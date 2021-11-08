@@ -13,7 +13,7 @@ import timm
 
 
 from .networks import SWIN
-from .losses import RegressionLogLossWithMargin
+from .losses import RegressionLogLossWithMargin, HingeLoss, WeightedLoss
 
 
 class LitPet(pl.LightningModule):
@@ -30,10 +30,25 @@ class LitPet(pl.LightningModule):
 
         # Make net
         self.pet_net = SWIN(
-            **self.hparams.model_params,
+            model_name=self.hparams.model_name,
+            num_image_neurons=self.hparams.num_image_neurons,
+            dropout_1=self.hparams.dropout_1,
+            dropout_2=self.hparams.dropout_2,
+            attn_drop=self.hparams.attn_drop,
+            regression_margin=self.hparams.regression_margin,
         )
 
-        self.loss_fn = RegressionLogLossWithMargin(0, 100, self.hparams.regression_margin)
+        self.loss_log = RegressionLogLossWithMargin(1, 100, self.hparams.regression_margin)
+        self.loss_hinge = HingeLoss(self.hparams.hinge_margin)
+
+        self.loss_fn_cat = WeightedLoss(
+            self.hparams.bce_weight_cat,
+            self.loss_log, self.loss_hinge,
+        )
+        self.loss_fn_dog = WeightedLoss(
+            self.hparams.bce_weight_dog,
+            self.loss_log, self.loss_hinge,
+        )
 
         self.rmse_score = 1000.0
 
@@ -41,10 +56,19 @@ class LitPet(pl.LightningModule):
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Model Parameters")
         parser.add_argument('--image_size', type=int, default=None)
-        parser.add_argument('--model_params', type=dict, default=None)
         parser.add_argument('--mixup_proba', type=float, default=None)
         parser.add_argument('--learning_rate', type=float, default=None)
         parser.add_argument('--regression_margin', type=float, default=None)
+        parser.add_argument('--model_name', type=str, default=None)
+        parser.add_argument('--num_image_neurons', type=int, default=None)
+        parser.add_argument('--dropout_1', type=float, default=None)
+        parser.add_argument('--dropout_2', type=float, default=None)
+        parser.add_argument('--attn_drop', type=float, default=None)
+        parser.add_argument('--bce_weight_cat', type=float, default=None)
+        parser.add_argument('--bce_weight_dog', type=float, default=None)
+        parser.add_argument('--prediction_lightness_delta', type=float, default=None)
+        parser.add_argument('--prediction_crop_weight', type=float, default=None)
+        parser.add_argument('--hinge_margin', type=float, default=None)
         return parent_parser
 
     def configure_optimizers(self):
@@ -57,41 +81,28 @@ class LitPet(pl.LightningModule):
             # 'lr_scheduler': lr_scheduler,
         }
 
-    def make_mixup(self, batch_size: int, alpha: float=0.5):
-        lam = np.random.beta(alpha, alpha)
-        rand_index = torch.randperm(batch_size)
-        return lam, rand_index
-
-    def mixup(self, x: torch.Tensor, y: torch.Tensor, lam, rand_index):
-        mixed_x = lam * x + (1 - lam) * x[rand_index, :]
-        target_a, target_b = y, y[rand_index]
-        return mixed_x, target_a, target_b, lam
-
     def forward(self, image, features):
         x = self.pet_net(image, features)
-        out = torch.sigmoid(x[:, 0]) * (100 + self.hparams.regression_margin * 2) - self.hparams.regression_margin
-        return out
+        return x
 
     def training_step(self, batch, batch_idx):
         # Dict for metrics
         log_dict = {}
 
-        if np.random.random() < self.hparams.mixup_proba:
-            # Make Mixup
-            lam, rand_index = self.make_mixup(batch['image'].shape[0])
-            # Predict pawplarity
-            pred = self(batch['image'], batch['features'], mixup=(lam, rand_index))
-            # Compute mixup loss
-            target_a, target_b = batch['target'], batch['target'][rand_index]
-            loss_a = self.loss_fn(pred, target_a)
-            loss_b = self.loss_fn(pred, target_b)
-            loss = loss_a * lam + loss_b * (1 - lam)
-        else:
-            # Predict pawplarity
-            pred = self(batch['image'], batch['features'])
-            loss = self.loss_fn(pred, batch['target'])
-            # Measure MSE
-            log_dict['train/mse'] = ((pred - batch['target'])**2).mean()
+        # Predict pawplarity
+        pred = self(batch['image'], batch['features'])
+
+        # Loss function
+        cat_detected = batch['cat_detected'].to(pred.dtype)
+        dog_detected = 1 - cat_detected
+        loss = (
+            self.loss_fn_cat(pred, batch['target']) * cat_detected
+            +
+            self.loss_fn_dog(pred, batch['target']) * dog_detected
+        ).mean()
+
+        # Measure MSE
+        log_dict['train/mse'] = ((pred - batch['target'])**2).mean()
 
         if loss != loss:
             print('ERROR: NaN loss!')
@@ -107,28 +118,26 @@ class LitPet(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
         # Make darker and lighter versions
-        dark = batch['image'] * 0.95
-        light = (batch['image'] * 1.05).clip(0, 1)
+        dark = batch['image'] * (1 - self.hparams.prediction_lightness_delta)
+        light = (batch['image'] * (1 + self.hparams.prediction_lightness_delta)).clip(0, 1)
         # Predict pawplarity
-        pred_dark = self(
-            dark,
-            batch['features']
-        )
-        pred_dark_flip = self(
-            dark.flip(-1),
-            batch['features']
-        )
-        pred_light = self(
-            light,
-            batch['features']
-        )
-        pred_light_flip = self(
-            light.flip(-1),
-            batch['features']
-        )
-        pred = 0.25 * (pred_dark + pred_dark_flip + pred_light + pred_light_flip)
-        pred = pred.clamp(0, 100)
-        return pred.detach().cpu().numpy(), batch['target'].cpu().numpy(), batch['dog_detected'].cpu().numpy()
+        inp_image = torch.cat([
+            dark, dark.flip(-1), light, light.flip(-1), batch['image_pet'], batch['image_pet'].flip(-1)
+        ], 0)
+        int_feats = batch['features'].repeat([6, 1])
+        with torch.no_grad():
+            pred = self(inp_image, int_feats)
+        pred = pred.view([6, batch['image'].shape[0]])
+        # Average
+        a = self.hparams.prediction_crop_weight
+        pred = (1 - a) * pred[:4].mean(0) + a * pred[4:].mean(0)
+        pred = pred.clamp(1, 100)
+        return {
+            'pred': pred.detach().cpu().numpy(),
+            'target': batch['target'].cpu().numpy(),
+            'dog_detected': batch['dog_detected'].cpu().numpy(),
+            'cat_detected': batch['cat_detected'].cpu().numpy(),
+        }
 
     def validation_epoch_end(self, validation_step_outputs, mode='valid'):
         '''
@@ -136,17 +145,18 @@ class LitPet(pl.LightningModule):
         '''
         # Concatenate predictions
         predictions = np.concatenate([
-            out[0]
+            out['pred']
             for out in validation_step_outputs
         ], 0)
         targets = np.concatenate([
-            out[1]
+            out['target']
             for out in validation_step_outputs
         ], 0)
-        dog_detected = np.concatenate([
-            out[2]
+        cat_detected = np.concatenate([
+            out['cat_detected']
             for out in validation_step_outputs
         ], 0)
+        dog_detected = 1 - cat_detected
 
         # Compute scores
         mse_score = ((predictions - targets)**2).mean()
@@ -155,11 +165,15 @@ class LitPet(pl.LightningModule):
         r2_score = (target_variance - mse_score) / target_variance
 
         # Compute score for dogs separately
-        mse_score_dogs = ((predictions - targets)**2)[dog_detected == 1].mean()
+        mse_score_dogs = (((predictions - targets)**2) * dog_detected).sum() / dog_detected.sum()
         rmse_score_dogs = np.sqrt(mse_score_dogs)
 
+        # Compute score for cats separately
+        mse_score_cats = (((predictions - targets)**2) * cat_detected).sum() / cat_detected.sum()
+        rmse_score_cats = np.sqrt(mse_score_cats)
+
         # Save best model
-        if rmse_score < self.rmse_score:
+        if rmse_score < self.rmse_score and not self.trainer.sanity_checking:
             if self.model_path is not None:
                 model = self.pet_net.eval().cpu()
                 with torch.jit.optimized_execution(True):
@@ -181,6 +195,7 @@ class LitPet(pl.LightningModule):
             f'{mode}/MSE': mse_score,
             f'{mode}/RMSE': rmse_score,
             f'{mode}/Dog_RMSE': rmse_score_dogs,
+            f'{mode}/Cat_RMSE': rmse_score_cats,
             f'{mode}/R2': r2_score,
         }
         if self.current_epoch == self.hparams.max_epochs - 1:

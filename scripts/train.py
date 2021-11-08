@@ -62,7 +62,7 @@ def main(config):
         trainer = pl.Trainer.from_argparse_args(
             config,
             logger=logger,
-            reload_dataloaders_every_epoch=True,
+            reload_dataloaders_every_n_epochs=1,
         )
 
         # Train model

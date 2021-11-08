@@ -43,6 +43,10 @@ class PetDataModule(pl.LightningDataModule):
         parser.add_argument('--num_folds', type=int, default=None)
         parser.add_argument('--batch_size', type=int, default=None)
         parser.add_argument('--freeze_augmentations', type=int, default=None)
+        parser.add_argument('--cpus', type=int, default=None)
+        parser.add_argument('--replace_bg_prob', type=float, default=None)
+        parser.add_argument('--glob_crop_prob', type=float, default=None)
+        parser.add_argument('--pet_crop_prob', type=float, default=None)
         return parent_parser
 
     def setup(self, stage: Optional[str] = None):
@@ -53,6 +57,9 @@ class PetDataModule(pl.LightningDataModule):
                 self.train_table,
                 image_size=self.config.image_size,
                 augmentations=self.augmentations,
+                replace_bg_prob=self.config.replace_bg_prob,
+                glob_crop_prob=self.config.glob_crop_prob,
+                pet_crop_prob=self.config.pet_crop_prob,
             )
 
         # Create validation datasets
@@ -77,14 +84,14 @@ class PetDataModule(pl.LightningDataModule):
             self.train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
-            num_workers=2,
+            num_workers=self.config.cpus,
         )
 
     def val_dataloader(self):
         return DataLoader(
             self.val_datasets,
             batch_size=self.config.batch_size,
-            num_workers=2
+            num_workers=self.config.cpus
         )
 
     def test_dataloader(self):
@@ -106,11 +113,17 @@ class PetDataset(torch.utils.data.Dataset):
         image_size=None,
         augmentations=None,
         channels_first=True,
+        replace_bg_prob=0.01,
+        glob_crop_prob=0.1,
+        pet_crop_prob=0.1,
     ):
         self.data_path = data_path
         self.resize = (image_size, image_size) if image_size is not None else None
         self.augmentations = augmentations
         self.channels_first = channels_first
+        self.glob_crop_prob = glob_crop_prob
+        self.pet_crop_prob = pet_crop_prob
+        self.replace_bg_prob = replace_bg_prob
 
         self.preproc = nnio.Preprocessing(
             resize=self.resize,
@@ -165,7 +178,8 @@ class PetDataset(torch.utils.data.Dataset):
         boxes = self.boxes[item].strip().split(';')[1:]
         mask = np.zeros(image.shape[:2], dtype='uint8')
         x_min_g, x_max_g, y_min_g, y_max_g = mask.shape[1], 0, mask.shape[0], 0
-        x_min_dog, x_max_dog, y_min_dog, y_max_dog = None, None, None, None
+        x_min_pet, x_max_pet, y_min_pet, y_max_pet = None, None, None, None
+        dog_detected, cat_detected = 0, 0
         clip = lambda x: max(min(x, 1), 0)
         area = lambda x_min, x_max, y_min, y_max: (x_max - x_min) * (y_max - y_min)
         for box in boxes:
@@ -183,29 +197,31 @@ class PetDataset(torch.utils.data.Dataset):
                 x_max_g = max(x_max_g, x_max)
                 y_min_g = min(y_min_g, y_min)
                 y_max_g = max(y_max_g, y_max)
-                # Find dog with max area
-                if box.label == 'dog':
+                # Find pet with max area
+                if box.label in ['dog', 'cat']:
                     if (
-                        x_min_dog is None
+                        x_min_pet is None
                         or
-                        area(x_min_dog, x_max_dog, y_min_dog, y_max_dog) < area(x_min, x_max, y_min, y_max)
+                        area(x_min_pet, x_max_pet, y_min_pet, y_max_pet) < area(x_min, x_max, y_min, y_max)
                     ):
-                        x_min_dog, x_max_dog, y_min_dog, y_max_dog = x_min, x_max, y_min, y_max
+                        x_min_pet, x_max_pet, y_min_pet, y_max_pet = x_min, x_max, y_min, y_max
+                if box.label == 'dog':
+                    dog_detected = 1
+                if box.label == 'cat':
+                    cat_detected = 1
 
-        # Crop the biggest dog
-        if x_min_dog is not None and area(x_min_dog, x_max_dog, y_min_dog, y_max_dog) > 1000:
-            dog_detected = 1
-            x_min_dog, x_max_dog, y_min_dog, y_max_dog = self.make_box_more_like_square(
-                x_min_dog, x_max_dog, y_min_dog, y_max_dog,
+        # Crop the biggest pet
+        if x_min_pet is not None and area(x_min_pet, x_max_pet, y_min_pet, y_max_pet) > 1000:
+            x_min_pet, x_max_pet, y_min_pet, y_max_pet = self.make_box_more_like_square(
+                x_min_pet, x_max_pet, y_min_pet, y_max_pet,
                 image
             )
-            image_dog = image[y_min_dog: y_max_dog, x_min_dog: x_max_dog]
+            image_pet = image[y_min_pet: y_max_pet, x_min_pet: x_max_pet]
         else:
-            dog_detected = 0
-            image_dog = np.zeros([10, 10, 3], dtype='uint8')
+            image_pet = image
 
         # Replace background with white noise
-        if (self.augmentations is not None) and (np.random.random() < 0.01):
+        if (self.augmentations is not None) and (np.random.random() < self.replace_bg_prob):
             noise = np.random.randint(0, 255, size=image.shape, dtype='uint8')
             image = image * mask[:, :, None] + noise * (1 - mask)[:, :, None]
 
@@ -218,28 +234,38 @@ class PetDataset(torch.utils.data.Dataset):
             )
 
             # Crop image
-            if (self.augmentations is not None) and (np.random.random() < 0.1):
+            if (self.augmentations is not None) and (np.random.random() < self.glob_crop_prob):
                 image = image[y_min_g: y_max_g, x_min_g: x_max_g]
+
+        # Replace image with only pet cropped
+        replace_with_cropped = False
+        if (self.augmentations is not None) and (np.random.random() < self.pet_crop_prob):
+            replace_with_cropped = True
 
         # Augment image
         if self.augmentations is not None:
-            image = self.augmentations(
-                image=image,
+            image_pet = self.augmentations(
+                image=image_pet,
             )['image']
-            image_dog = self.augmentations(
-                image=image_dog,
-            )['image']
+            if not replace_with_cropped:
+                image = self.augmentations(
+                    image=image,
+                )['image']
 
         # Resize and preprocess images
-        image = self.preproc(image)
-        image_dog = self.preproc(image_dog)
+        image_pet = self.preproc(image_pet)
+        if not replace_with_cropped:
+            image = self.preproc(image)
+        else:
+            image = image_pet
 
         return {
             'image': image,
             'features': features,
             'target': target,
             'dog_detected': dog_detected,
-            'image_dog': image_dog,
+            'cat_detected': cat_detected,
+            'image_pet': image_pet,
         }
 
 
@@ -256,8 +282,9 @@ if __name__ == '__main__':
 
     for i in range(len(dataset)):
         image = dataset[i]['image']
-        image_dog = dataset[i]['image_dog']
-        print(dataset[i]['dog_detected'])
+        image_dog = dataset[i]['image_pet']
+        print('dog', dataset[i]['dog_detected'])
+        print('cat', dataset[i]['cat_detected'])
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 8))
         axes[0].imshow(image)

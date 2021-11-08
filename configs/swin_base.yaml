@@ -3,18 +3,36 @@ data_path: /home/ruslan/data/datasets_ssd/kaggle/petfinder-pawpularity-score/
 
 # Model parameters
 image_size: 224
-model_params:
-  model_name: swin_base_patch4_window7_224
-  num_image_neurons: 256
-  dropout: 0.5
-  attn_drop: 0.1
+model_name: swin_base_patch4_window7_224
+num_image_neurons: 256
+dropout_1: 0.5
+dropout_2: 0.5
+attn_drop: 0.1
 regression_margin: 1.0
+
+# Augmentation
+replace_bg_prob: 0.01
+glob_crop_prob: 0.1
+pet_crop_prob: 0.1
+
+# Loss
+bce_weight_cat: 0.0
+bce_weight_dog: 0.0
+hinge_margin: 10.0
+
+# Predictions
+prediction_lightness_delta: 0.05
+prediction_crop_weight: 0.33
 
 # Training parameters
 num_folds: 5
-max_epochs: 10
-batch_size: 20
+max_epochs: 8
+batch_size: 25
 learning_rate: 0.00002
 mixup_proba: -1
 random_seed: 42
 freeze_augmentations: 2
+
+# Hardware
+cpus: 6
+gpus: 1
