@@ -1,0 +1,38 @@
+# Data paths
+data_path: /home/ruslan/data/datasets_ssd/kaggle/petfinder-pawpularity-score/
+
+# Model parameters
+image_size: 400
+regression_margin: 3.5
+model_type: detr
+detr_num_boxes: 20
+
+# Augmentation
+replace_bg_prob: 0.05
+glob_crop_prob: 0.1
+pet_crop_prob: 0.1
+freeze_augmentations: 2
+
+# Loss
+bce_weight_cat: 0.5
+bce_weight_dog: 0.5
+hinge_margin: 3.0
+
+# Predictions
+prediction_lightness_delta: 0.08
+prediction_crop_weight: 0.15
+
+# Training parameters
+num_folds: 5
+max_epochs: 8
+batch_size: 5
+learning_rate: 0.00003
+mixup_proba: -1
+
+# Hardware
+cpus: 6
+gpus: 1
+
+# Run-type-specific
+random_seed: 42
+wandb_project: pf2

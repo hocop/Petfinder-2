@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import timm
 
 
-from .networks import SWIN
+from .networks import SWIN, PetDETR
 from .losses import RegressionLogLossWithMargin, HingeLoss, WeightedLoss
 
 
@@ -29,14 +29,21 @@ class LitPet(pl.LightningModule):
         self.model_path = model_path
 
         # Make net
-        self.pet_net = SWIN(
-            model_name=self.hparams.model_name,
-            num_image_neurons=self.hparams.num_image_neurons,
-            dropout_1=self.hparams.dropout_1,
-            dropout_2=self.hparams.dropout_2,
-            attn_drop=self.hparams.attn_drop,
-            regression_margin=self.hparams.regression_margin,
-        )
+        if self.hparams.model_type == 'swin':
+            self.pet_net = SWIN(
+                model_name=self.hparams.swin_model_name,
+                num_image_neurons=self.hparams.swin_num_image_neurons,
+                dropout_1=self.hparams.swin_dropout_1,
+                dropout_2=self.hparams.swin_dropout_2,
+                attn_drop=self.hparams.swin_attn_drop,
+                freeze_layers=self.hparams.swin_freeze_layers,
+                regression_margin=self.hparams.regression_margin,
+            )
+        elif self.hparams.model_type == 'detr':
+            self.pet_net = PetDETR(
+                num_boxes=self.hparams.detr_num_boxes,
+                regression_margin=self.hparams.regression_margin,
+            )
 
         self.loss_log = RegressionLogLossWithMargin(1, 100, self.hparams.regression_margin)
         self.loss_hinge = HingeLoss(self.hparams.hinge_margin)
@@ -59,15 +66,19 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--mixup_proba', type=float, default=None)
         parser.add_argument('--learning_rate', type=float, default=None)
         parser.add_argument('--regression_margin', type=float, default=None)
-        parser.add_argument('--model_name', type=str, default=None)
-        parser.add_argument('--num_image_neurons', type=int, default=None)
-        parser.add_argument('--dropout_1', type=float, default=None)
-        parser.add_argument('--dropout_2', type=float, default=None)
-        parser.add_argument('--attn_drop', type=float, default=None)
+        parser.add_argument('--model_type', type=str, default=None)
+        parser.add_argument('--swin_model_name', type=str, default=None)
+        parser.add_argument('--swin_num_image_neurons', type=int, default=None)
+        parser.add_argument('--swin_dropout_1', type=float, default=None)
+        parser.add_argument('--swin_dropout_2', type=float, default=None)
+        parser.add_argument('--swin_attn_drop', type=float, default=None)
+        parser.add_argument('--swin_freeze_layers', type=int, default=None)
+        parser.add_argument('--detr_num_boxes', type=float, default=None)
         parser.add_argument('--bce_weight_cat', type=float, default=None)
         parser.add_argument('--bce_weight_dog', type=float, default=None)
         parser.add_argument('--prediction_lightness_delta', type=float, default=None)
-        parser.add_argument('--prediction_crop_weight', type=float, default=None)
+        parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
+        parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
         return parent_parser
 
@@ -96,13 +107,19 @@ class LitPet(pl.LightningModule):
         cat_detected = batch['cat_detected'].to(pred.dtype)
         dog_detected = 1 - cat_detected
         loss = (
-            self.loss_fn_cat(pred, batch['target']) * cat_detected
+            self.loss_fn_cat(pred.mean(1), batch['target']) * cat_detected
             +
-            self.loss_fn_dog(pred, batch['target']) * dog_detected
+            self.loss_fn_dog(pred.mean(1), batch['target']) * dog_detected
         ).mean()
 
+        # loss = (
+        #     self.loss_log(pred[:, 0], batch['target'])
+        #     +
+        #     self.loss_hinge(pred[:, 1], batch['target'])
+        # ).mean()
+
         # Measure MSE
-        log_dict['train/mse'] = ((pred - batch['target'])**2).mean()
+        log_dict['train/mse'] = ((pred.mean(1) - batch['target'])**2).mean()
 
         if loss != loss:
             print('ERROR: NaN loss!')
@@ -122,15 +139,23 @@ class LitPet(pl.LightningModule):
         light = (batch['image'] * (1 + self.hparams.prediction_lightness_delta)).clip(0, 1)
         # Predict pawplarity
         inp_image = torch.cat([
-            dark, dark.flip(-1), light, light.flip(-1), batch['image_pet'], batch['image_pet'].flip(-1)
+            dark, dark.flip(-1),
+            light, light.flip(-1),
+            batch['image_pet'], batch['image_pet'].flip(-1),
+            batch['image_glob'], batch['image_glob'].flip(-1),
         ], 0)
-        int_feats = batch['features'].repeat([6, 1])
+        int_feats = batch['features'].repeat([8, 1])
         with torch.no_grad():
-            pred = self(inp_image, int_feats)
-        pred = pred.view([6, batch['image'].shape[0]])
+            pred = self(inp_image, int_feats).mean(1)
+        pred = pred.view([8, batch['image'].shape[0]])
         # Average
-        a = self.hparams.prediction_crop_weight
-        pred = (1 - a) * pred[:4].mean(0) + a * pred[4:].mean(0)
+        b = self.hparams.prediction_pet_crop_weight
+        c = self.hparams.prediction_glob_crop_weight
+        s = 1 + b + c
+        a = 1 / s
+        b = b / s
+        c = c / s
+        pred = a * pred[:4].mean(0) + b * pred[4:6].mean(0) + c * pred[6:].mean(0)
         pred = pred.clamp(1, 100)
         return {
             'pred': pred.detach().cpu().numpy(),

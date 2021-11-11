@@ -13,6 +13,7 @@ class SWIN(nn.Module):
         dropout_1,
         dropout_2,
         attn_drop,
+        freeze_layers,
         regression_margin
     ):
         super().__init__()
@@ -28,10 +29,15 @@ class SWIN(nn.Module):
         self.pet_net = timm.create_model(model_name, pretrained=True, in_chans=3, attn_drop=attn_drop)
 
         # Freeze first layers
-        self.pet_net.patch_embed.requires_grad_(False)
-        self.pet_net.pos_drop.requires_grad_(False)
-        self.pet_net.layers[1].requires_grad_(False)
-        self.pet_net.layers[2].requires_grad_(False)
+        if freeze_layers >= 1:
+            self.pet_net.patch_embed.requires_grad_(False)
+            self.pet_net.pos_drop.requires_grad_(False)
+        if freeze_layers >= 2:
+            self.pet_net.layers[1].requires_grad_(False)
+        if freeze_layers >= 3:
+            self.pet_net.layers[2].requires_grad_(False)
+        if freeze_layers >= 4:
+            self.pet_net.layers[3].requires_grad_(False)
 
         # Replace head
         self.pet_net.head = nn.Sequential(
@@ -61,7 +67,7 @@ class SWIN(nn.Module):
         x = self.out_layer(x)
 
         # Scale
-        out = torch.sigmoid(x[:, 0]) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
+        out = torch.sigmoid(x) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
         return out
 
 

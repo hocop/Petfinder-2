@@ -22,27 +22,19 @@ class PetDataModule(pl.LightningDataModule):
         self.train_table = train_table
         self.valid_table = valid_table
 
-        # Augmentations for training
-        self.augmentations = A.Compose([
-            # Flips
-            A.HorizontalFlip(p=0.5),
-            # Color transforms
-            A.RandomBrightnessContrast(brightness_limit=(-0.1, 0.1), contrast_limit=(-0.1, 0.1), p=0.5),
-            A.HueSaturationValue(hue_shift_limit=0.2, sat_shift_limit=0.2, val_shift_limit=0.2, p=0.5),
-        ])
-
         self.train_dataset = None
         self.val_datasets = None
         self.test_datasets = None
-        self.freeze_augmentations = self.config.freeze_augmentations
+        self.epoch_count = 0
 
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Dataloader parameters")
         parser.add_argument('--data_path', type=str, default=None)
+        parser.add_argument('--choose_categories', type=str, default=None)
         parser.add_argument('--num_folds', type=int, default=None)
         parser.add_argument('--batch_size', type=int, default=None)
-        parser.add_argument('--freeze_augmentations', type=int, default=None)
+        parser.add_argument('--freeze_augmentations', type=float, default=None)
         parser.add_argument('--cpus', type=int, default=None)
         parser.add_argument('--replace_bg_prob', type=float, default=None)
         parser.add_argument('--glob_crop_prob', type=float, default=None)
@@ -55,11 +47,9 @@ class PetDataModule(pl.LightningDataModule):
             self.train_dataset = PetDataset(
                 self.config.data_path,
                 self.train_table,
+                self.config.choose_categories,
                 image_size=self.config.image_size,
-                augmentations=self.augmentations,
-                replace_bg_prob=self.config.replace_bg_prob,
-                glob_crop_prob=self.config.glob_crop_prob,
-                pet_crop_prob=self.config.pet_crop_prob,
+                augmentations=None,
             )
 
         # Create validation datasets
@@ -67,18 +57,36 @@ class PetDataModule(pl.LightningDataModule):
             self.val_datasets = PetDataset(
                 self.config.data_path,
                 self.valid_table,
+                self.config.choose_categories,
                 image_size=self.config.image_size,
                 augmentations=None,
             )
 
 
     def train_dataloader(self):
-        # Freeze augmentations for some first epochs
-        self.freeze_augmentations -= 1
-        if self.freeze_augmentations >= 0:
-            self.train_dataset.augmentations = None
-        else:
-            self.train_dataset.augmentations = self.augmentations
+        # Augmentations for training
+        augs_coef = min(self.epoch_count / self.config.freeze_augmentations, 1.0)
+        augmentations = A.Compose([
+            # Flips
+            A.HorizontalFlip(p=0.5),
+            # Color transforms
+            A.RandomBrightnessContrast(
+                brightness_limit=(-0.1 * augs_coef, 0.1 * augs_coef),
+                contrast_limit=(-0.1 * augs_coef, 0.1 * augs_coef),
+                p=0.5
+            ),
+            A.HueSaturationValue(
+                hue_shift_limit=0.2 * augs_coef,
+                sat_shift_limit=0.2 * augs_coef,
+                val_shift_limit=0.2 * augs_coef,
+                p=0.5
+            ),
+        ])
+        self.train_dataset.augmentations = augmentations
+        self.train_dataset.replace_bg_prob = self.config.replace_bg_prob * augs_coef
+        self.train_dataset.glob_crop_prob = self.config.glob_crop_prob * augs_coef
+        self.train_dataset.pet_crop_prob = self.config.pet_crop_prob * augs_coef
+        self.epoch_count += 1
 
         return DataLoader(
             self.train_dataset,
@@ -110,12 +118,13 @@ class PetDataset(torch.utils.data.Dataset):
         self,
         data_path,
         table,
+        choose_categories,
         image_size=None,
         augmentations=None,
         channels_first=True,
-        replace_bg_prob=0.01,
-        glob_crop_prob=0.1,
-        pet_crop_prob=0.1,
+        replace_bg_prob=0.0,
+        glob_crop_prob=0.0,
+        pet_crop_prob=0.0,
     ):
         self.data_path = data_path
         self.resize = (image_size, image_size) if image_size is not None else None
@@ -136,7 +145,15 @@ class PetDataset(torch.utils.data.Dataset):
 
         self.table = table
 
-        self.boxes = open(os.path.join(data_path, 'boxes_train.txt')).readlines()
+        cat_mask = np.array(['cat' in b for b in self.table['boxes']])
+        mask = None
+        if choose_categories == 'cat':
+            mask = cat_mask
+        elif choose_categories == 'dog':
+            mask = ~cat_mask
+        
+        if mask is not None:
+            self.table = self.table[mask]
 
     def __len__(self):
         return len(self.table)
@@ -175,7 +192,7 @@ class PetDataset(torch.utils.data.Dataset):
         ])
 
         # Make background mask and find region of interest
-        boxes = self.boxes[item].strip().split(';')[1:]
+        boxes = row['boxes'].strip().split(';')[1:]
         mask = np.zeros(image.shape[:2], dtype='uint8')
         x_min_g, x_max_g, y_min_g, y_max_g = mask.shape[1], 0, mask.shape[0], 0
         x_min_pet, x_max_pet, y_min_pet, y_max_pet = None, None, None, None
@@ -221,7 +238,7 @@ class PetDataset(torch.utils.data.Dataset):
             image_pet = image
 
         # Replace background with white noise
-        if (self.augmentations is not None) and (np.random.random() < self.replace_bg_prob):
+        if np.random.random() < self.replace_bg_prob:
             noise = np.random.randint(0, 255, size=image.shape, dtype='uint8')
             image = image * mask[:, :, None] + noise * (1 - mask)[:, :, None]
 
@@ -234,30 +251,42 @@ class PetDataset(torch.utils.data.Dataset):
             )
 
             # Crop image
-            if (self.augmentations is not None) and (np.random.random() < self.glob_crop_prob):
-                image = image[y_min_g: y_max_g, x_min_g: x_max_g]
+            image_glob = image[y_min_g: y_max_g, x_min_g: x_max_g]
+        else:
+            image_glob = image
 
         # Replace image with only pet cropped
         replace_with_cropped = False
-        if (self.augmentations is not None) and (np.random.random() < self.pet_crop_prob):
+        if np.random.random() < self.pet_crop_prob:
             replace_with_cropped = True
+        
+        # Replace image with all pets cropped
+        replace_with_glob = False
+        if np.random.random() < self.glob_crop_prob:
+            replace_with_glob = True
 
         # Augment image
         if self.augmentations is not None:
             image_pet = self.augmentations(
                 image=image_pet,
             )['image']
-            if not replace_with_cropped:
+            image_glob = self.augmentations(
+                image=image_glob,
+            )['image']
+            if not (replace_with_cropped or replace_with_glob):
                 image = self.augmentations(
                     image=image,
                 )['image']
 
         # Resize and preprocess images
         image_pet = self.preproc(image_pet)
+        image_glob = self.preproc(image_glob)
         if not replace_with_cropped:
             image = self.preproc(image)
         else:
             image = image_pet
+        if replace_with_glob:
+            image = image_glob
 
         return {
             'image': image,
@@ -266,27 +295,41 @@ class PetDataset(torch.utils.data.Dataset):
             'dog_detected': dog_detected,
             'cat_detected': cat_detected,
             'image_pet': image_pet,
+            'image_glob': image_glob,
         }
 
 
 if __name__ == '__main__':
     DATA_PATH = '/home/ruslan/data/datasets_ssd/kaggle/petfinder-pawpularity-score/'
+    from sklearn.model_selection import KFold
     import os
     import pandas as pd
     import matplotlib.pyplot as plt
     import matplotlib
 
     data_train = pd.read_csv(os.path.join(DATA_PATH, 'train.csv'))
+    # Load boxes
+    with open(os.path.join(DATA_PATH, 'boxes_train.txt')) as boxes:
+        data_train['boxes'] = [l.strip() for l in boxes]
 
-    dataset = PetDataset(DATA_PATH, data_train, channels_first=False)
+    # KFOLD
+    kf = KFold(10, shuffle=True, random_state=42)
 
-    for i in range(len(dataset)):
-        image = dataset[i]['image']
-        image_dog = dataset[i]['image_pet']
-        print('dog', dataset[i]['dog_detected'])
-        print('cat', dataset[i]['cat_detected'])
+    for fold, (train_index, val_index) in enumerate(kf.split(data_train)):
+        print('Fold', fold + 1)
+        dataset = PetDataset(
+            DATA_PATH,
+            data_train.iloc[val_index],
+            'all',
+            channels_first=False
+        )
 
-        fig, axes = plt.subplots(1, 2, figsize=(14, 8))
-        axes[0].imshow(image)
-        axes[1].imshow(image_dog)
-        plt.show()
+        for i in range(len(dataset)):
+            image = dataset[i]['image']
+            image_dog = dataset[i]['image_pet']
+            print('dog', dataset[i]['dog_detected'], 'cat', dataset[i]['cat_detected'])
+
+            fig, axes = plt.subplots(1, 2, figsize=(14, 8))
+            axes[0].imshow(image)
+            axes[1].imshow(image_dog)
+            plt.show()

@@ -20,3 +20,7 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 * SVR boost
 * freezeout
 * pretrain on pf1
+* use only images where dog or cat is detected
+* draw detection boxes on input images
+* use detr model
+* half precision training
