@@ -69,6 +69,11 @@ class SWIN(nn.Module):
         # Scale
         out = torch.sigmoid(x) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
         return out
+    
+    def l2(self):
+        w1 = (self.pet_net.head[1].weight**2).mean()
+        w2 = (self.out_layer.weight**2).mean()
+        return w1 + w2
 
 
 class Freezeout(nn.Module):

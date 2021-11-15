@@ -65,6 +65,7 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--image_size', type=int, default=None)
         parser.add_argument('--mixup_proba', type=float, default=None)
         parser.add_argument('--learning_rate', type=float, default=None)
+        parser.add_argument('--weight_decay', type=float, default=None)
         parser.add_argument('--regression_margin', type=float, default=None)
         parser.add_argument('--model_type', type=str, default=None)
         parser.add_argument('--swin_model_name', type=str, default=None)
@@ -117,6 +118,9 @@ class LitPet(pl.LightningModule):
         #     +
         #     self.loss_hinge(pred[:, 1], batch['target'])
         # ).mean()
+
+        # Weight decay
+        loss = loss + self.pet_net.l2() * self.hparams.weight_decay
 
         # Measure MSE
         log_dict['train/mse'] = ((pred.mean(1) - batch['target'])**2).mean()

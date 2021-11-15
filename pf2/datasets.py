@@ -84,8 +84,8 @@ class PetDataModule(pl.LightningDataModule):
         ])
         self.train_dataset.augmentations = augmentations
         self.train_dataset.replace_bg_prob = self.config.replace_bg_prob * augs_coef
-        self.train_dataset.glob_crop_prob = self.config.glob_crop_prob * augs_coef
-        self.train_dataset.pet_crop_prob = self.config.pet_crop_prob * augs_coef
+        self.train_dataset.glob_crop_prob = self.config.glob_crop_prob
+        self.train_dataset.pet_crop_prob = self.config.pet_crop_prob
         self.epoch_count += 1
 
         return DataLoader(
