@@ -6,37 +6,37 @@ choose_categories: 'all'
 
 # Model parameters
 image_size: 224
-regression_margin: 1.555
+regression_margin: 1.594
 model_type: swin
 swin_model_name: swin_base_patch4_window7_224
 swin_num_image_neurons: 2000
-swin_dropout_1: 0.4379
-swin_dropout_2: 0.6277
-swin_attn_drop: 0.03102
+swin_dropout_1: 0.4209
+swin_dropout_2: 0.6479
+swin_attn_drop: 0.01968
 swin_freeze_layers: 3
 
 # Augmentation
-replace_bg_prob: 0.1964
-glob_crop_prob: 0.4246
-pet_crop_prob: 0.149
-freeze_augmentations: 3.133
+replace_bg_prob: 0.1954
+glob_crop_prob: 0.531
+pet_crop_prob: 0.3464
+freeze_augmentations: 0.08384
 
 # Loss
-bce_weight_cat: 0.6952
-bce_weight_dog: 0.7165
-hinge_margin: 13.961
+bce_weight_cat: 0.7446
+bce_weight_dog: 0.8141
+hinge_margin: 12.315
 
 # Predictions
-prediction_lightness_delta: 0.08765
-prediction_pet_crop_weight: 0.3061
-prediction_glob_crop_weight: 0.5501
+prediction_lightness_delta: 0.06269
+prediction_pet_crop_weight: 0.5195
+prediction_glob_crop_weight: 0.4225
 
 # Training parameters
 num_folds: 10
 max_epochs: 10
 batch_size: 25
-learning_rate: 0.00002704
-weight_decay: 0.001183
+learning_rate: 0.00002583
+weight_decay: 0.0007742
 mixup_proba: -1
 
 # Hardware
