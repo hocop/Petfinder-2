@@ -58,6 +58,7 @@ class LitPet(pl.LightningModule):
         )
 
         self.rmse_score = 1000.0
+        self.rmse_and_std_score = 1000.0
 
     @staticmethod
     def add_argparse_args(parent_parser):
@@ -193,6 +194,10 @@ class LitPet(pl.LightningModule):
         target_variance = ((targets - targets.mean())**2).mean()
         r2_score = (target_variance - mse_score) / target_variance
 
+        # Std of rmse
+        rmse_std = np.abs(predictions - targets).std()
+        rmse_and_std_score = rmse_score + rmse_std
+
         # Compute score for dogs separately
         mse_score_dogs = (((predictions - targets)**2) * dog_detected).sum() / dog_detected.sum()
         rmse_score_dogs = np.sqrt(mse_score_dogs)
@@ -217,18 +222,21 @@ class LitPet(pl.LightningModule):
 
             # Remember RMSE
             self.rmse_score = rmse_score
+            self.rmse_and_std_score = rmse_and_std_score
 
         # Log average pawpularity metrics
         metrics = {
             'cv_step': self.fold * self.hparams.max_epochs + self.current_epoch,
             f'{mode}/MSE': mse_score,
             f'{mode}/RMSE': rmse_score,
+            f'{mode}/RMSE+std': rmse_and_std_score,
             f'{mode}/Dog_RMSE': rmse_score_dogs,
             f'{mode}/Cat_RMSE': rmse_score_cats,
             f'{mode}/R2': r2_score,
         }
         if self.current_epoch == self.hparams.max_epochs - 1:
             metrics['Best RMSE'] = self.rmse_score
+            metrics['Best RMSE+std'] = self.rmse_and_std_score
             metrics['fold'] = self.fold
         self.log_dict(
             metrics,
