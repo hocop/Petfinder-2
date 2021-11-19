@@ -39,6 +39,17 @@ class PetDataModule(pl.LightningDataModule):
         parser.add_argument('--replace_bg_prob', type=float, default=None)
         parser.add_argument('--glob_crop_prob', type=float, default=None)
         parser.add_argument('--pet_crop_prob', type=float, default=None)
+        # Augmentation parameters
+        parser.add_argument('--aug_brightness_lim', type=float, default=None)
+        parser.add_argument('--aug_contrast_lim', type=float, default=None)
+        parser.add_argument('--aug_hue_lim', type=float, default=None)
+        parser.add_argument('--aug_sat_lim', type=float, default=None)
+        parser.add_argument('--aug_val_lim', type=float, default=None)
+        parser.add_argument('--aug_brcon_prob', type=float, default=None)
+        parser.add_argument('--aug_hsv_prob', type=float, default=None)
+        parser.add_argument('--aug_gray_prob', type=float, default=None)
+        # GAN parameters
+        parser.add_argument('--old_domain_prob', type=float, default=None)
         return parent_parser
 
     def setup(self, stage: Optional[str] = None):
@@ -50,6 +61,7 @@ class PetDataModule(pl.LightningDataModule):
                 self.config.choose_categories,
                 image_size=self.config.image_size,
                 augmentations=None,
+                old_domain_prob=self.config.old_domain_prob,
             )
 
         # Create validation datasets
@@ -71,16 +83,17 @@ class PetDataModule(pl.LightningDataModule):
             A.HorizontalFlip(p=0.5),
             # Color transforms
             A.RandomBrightnessContrast(
-                brightness_limit=(-0.1 * augs_coef, 0.1 * augs_coef),
-                contrast_limit=(-0.1 * augs_coef, 0.1 * augs_coef),
-                p=0.5
+                brightness_limit=(-self.config.aug_brightness_lim * augs_coef, self.config.aug_brightness_lim * augs_coef),
+                contrast_limit=(-self.config.aug_contrast_lim * augs_coef, self.config.aug_contrast_lim * augs_coef),
+                p=self.config.aug_brcon_prob
             ),
             A.HueSaturationValue(
-                hue_shift_limit=0.2 * augs_coef,
-                sat_shift_limit=0.2 * augs_coef,
-                val_shift_limit=0.2 * augs_coef,
-                p=0.5
+                hue_shift_limit=self.config.aug_hue_lim * augs_coef,
+                sat_shift_limit=self.config.aug_sat_lim * augs_coef,
+                val_shift_limit=self.config.aug_val_lim * augs_coef,
+                p=self.config.aug_hsv_prob
             ),
+            A.ToGray(p=self.config.aug_gray_prob * augs_coef)
         ])
         self.train_dataset.augmentations = augmentations
         self.train_dataset.replace_bg_prob = self.config.replace_bg_prob * augs_coef
@@ -125,7 +138,10 @@ class PetDataset(torch.utils.data.Dataset):
         replace_bg_prob=0.0,
         glob_crop_prob=0.0,
         pet_crop_prob=0.0,
+        old_domain_prob=0.0,
     ):
+        super().__init__()
+
         self.data_path = data_path
         self.resize = (image_size, image_size) if image_size is not None else None
         self.augmentations = augmentations
@@ -133,6 +149,7 @@ class PetDataset(torch.utils.data.Dataset):
         self.glob_crop_prob = glob_crop_prob
         self.pet_crop_prob = pet_crop_prob
         self.replace_bg_prob = replace_bg_prob
+        self.old_domain_prob = old_domain_prob
 
         self.preproc = nnio.Preprocessing(
             resize=self.resize,
@@ -179,10 +196,15 @@ class PetDataset(torch.utils.data.Dataset):
         # Get features
         features = row[self.dense_features].values.astype('float32')
         # Get target
-        target = row.Pawpularity.astype('float32')
+        target = np.array(row.Pawpularity.astype('float32'))
 
         # Load image
         img_path = os.path.join(self.data_path, 'train', row['Id'] + '.jpg')
+        old_domain = np.random.random() < self.old_domain_prob
+        if old_domain:
+            img_path = os.path.join(self.data_path, 'old_petfinder', 'images')
+            img_path = os.path.join(img_path, np.random.choice(os.listdir(img_path)))
+            target = np.array(-100.0).astype('float32')
         image = cv2.imread(img_path)[:, :, ::-1]
 
         # Add image size to features
@@ -256,14 +278,10 @@ class PetDataset(torch.utils.data.Dataset):
             image_glob = image
 
         # Replace image with only pet cropped
-        replace_with_cropped = False
-        if np.random.random() < self.pet_crop_prob:
-            replace_with_cropped = True
+        replace_with_cropped = np.random.random() < self.pet_crop_prob and not old_domain
         
         # Replace image with all pets cropped
-        replace_with_glob = False
-        if np.random.random() < self.glob_crop_prob:
-            replace_with_glob = True
+        replace_with_glob = np.random.random() < self.glob_crop_prob and not old_domain
 
         # Augment image
         if self.augmentations is not None:
@@ -279,14 +297,18 @@ class PetDataset(torch.utils.data.Dataset):
                 )['image']
 
         # Resize and preprocess images
-        image_pet = self.preproc(image_pet)
-        image_glob = self.preproc(image_glob)
+        if not old_domain:
+            image_pet = self.preproc(image_pet)
+            image_glob = self.preproc(image_glob)
         if not replace_with_cropped:
             image = self.preproc(image)
         else:
             image = image_pet
         if replace_with_glob:
             image = image_glob
+        if old_domain:
+            image_pet = image
+            image_glob = image
 
         return {
             'image': image,

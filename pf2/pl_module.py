@@ -45,6 +45,20 @@ class LitPet(pl.LightningModule):
                 regression_margin=self.hparams.regression_margin,
             )
 
+        # Domain adaptation GAN
+        if self.hparams.discrim_layers == 1:
+            self.discriminator = nn.Linear(
+                self.hparams.swin_num_image_neurons,
+                1
+            )
+        elif self.hparams.discrim_layers == 2:
+            self.discriminator = nn.Sequential(
+                nn.Linear(self.hparams.swin_num_image_neurons, 100),
+                nn.ReLU(True),
+                nn.Linear(100, 1),
+            )
+        self.loss_gan = nn.BCEWithLogitsLoss(reduction='none')
+
         self.loss_log = RegressionLogLossWithMargin(1, 100, self.hparams.regression_margin)
         self.loss_hinge = HingeLoss(self.hparams.hinge_margin)
 
@@ -58,7 +72,7 @@ class LitPet(pl.LightningModule):
         )
 
         self.rmse_score = 1000.0
-        self.rmse_and_std_score = 1000.0
+        self.rmse_list = []
 
     @staticmethod
     def add_argparse_args(parent_parser):
@@ -82,58 +96,89 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
+        # GAN
+        parser.add_argument('--discrim_learning_rate', type=float, default=None)
+        parser.add_argument('--generator_loss_weight', type=float, default=None)
+        parser.add_argument('--discrim_layers', type=int, default=None)
         return parent_parser
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.learning_rate)
-        # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        #     optimizer, T_0=10, T_mult=1, eta_min=1e-6, last_epoch=-1
-        # )
-        return {
-            'optimizer': optimizer,
-            # 'lr_scheduler': lr_scheduler,
-        }
+        optimizer = torch.optim.Adam(self.pet_net.parameters(), lr=self.hparams.learning_rate)
+        if self.hparams.old_domain_prob <= 0:
+            return optimizer
+        optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=self.hparams.discrim_learning_rate)
+        return [optimizer, optimizer_d]
 
     def forward(self, image, features):
-        x = self.pet_net(image, features)
-        return x
+        x, image_features = self.pet_net(image, features)
+        return x, image_features
 
-    def training_step(self, batch, batch_idx):
+    def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, alpha: float = 1.0):
+        assert alpha > 0, "alpha should be larger than 0"
+        assert x.size(0) > 1, "Mixup cannot be applied to a single instance."
+
+        lam = np.random.beta(alpha, alpha)
+        rand_index = torch.randperm(x.size()[0])
+        mixed_x = lam * x + (1 - lam) * x[rand_index]
+        mixed_feats = lam * feats + (1 - lam) * feats[rand_index]
+        target_a, target_b = y, y[rand_index]
+        return mixed_x, mixed_feats, target_a, target_b, lam
+
+    def training_step(self, batch, batch_idx, optimizer_idx=0):
         # Dict for metrics
         log_dict = {}
 
         # Predict pawplarity
-        pred = self(batch['image'], batch['features'])
+        pred, image_features = self(batch['image'], batch['features'])
 
-        # Loss function
-        cat_detected = batch['cat_detected'].to(pred.dtype)
-        dog_detected = 1 - cat_detected
-        loss = (
-            self.loss_fn_cat(pred.mean(1), batch['target']) * cat_detected
-            +
-            self.loss_fn_dog(pred.mean(1), batch['target']) * dog_detected
-        ).mean()
+        # Old domain mask
+        old_mask = (batch['target'] < 0).to(batch['target'].dtype)
+        new_mask = 1 - old_mask
 
-        # loss = (
-        #     self.loss_log(pred[:, 0], batch['target'])
-        #     +
-        #     self.loss_hinge(pred[:, 1], batch['target'])
-        # ).mean()
+        if optimizer_idx == 0:
+            # Supervision loss (for pf2 images)
+            cat_detected = batch['cat_detected'].to(pred.dtype)
+            dog_detected = 1 - cat_detected
+            loss = (
+                self.loss_fn_cat(pred.mean(1), batch['target']) * cat_detected
+                +
+                self.loss_fn_dog(pred.mean(1), batch['target']) * dog_detected
+            )
+            loss = (loss * new_mask).sum() / (new_mask.sum() + 1e-9)
 
-        # Weight decay
-        loss = loss + self.pet_net.l2() * self.hparams.weight_decay
+            # Domain adaptation generator loss (for old images)
+            if self.hparams.old_domain_prob > 0:
+                loss_gen = self.loss_gan(
+                    self.discriminator(image_features)[:, 0],
+                    torch.zeros_like(old_mask),
+                )
+                loss_gen = (loss_gen * old_mask).sum() / (old_mask.sum() + 1e-9)
+                loss = loss + loss_gen * self.hparams.generator_loss_weight
+
+            # Weight decay
+            loss = loss + self.pet_net.l2() * self.hparams.weight_decay
+
+            log_dict['train/loss'] = loss
+
+        if optimizer_idx == 1:
+            # Domain adaptation discriminator loss
+            loss = self.loss_gan(
+                self.discriminator(image_features.detach())[:, 0],
+                old_mask,
+            )
+            loss = loss.mean()
+
+            log_dict['train/discrim_loss'] = loss
 
         # Measure MSE
-        log_dict['train/mse'] = ((pred.mean(1) - batch['target'])**2).mean()
+        log_dict['train/mse'] = (((pred.mean(1) - batch['target'])**2) * new_mask).sum() / new_mask.sum()
 
         if loss != loss:
             print('ERROR: NaN loss!')
 
-        log_dict['train/loss'] = loss
-
         self.log_dict(
             log_dict,
-            on_step=False, on_epoch=True, prog_bar=False, logger=True
+            on_step=False, on_epoch=True, prog_bar=True, logger=True
         )
 
         return loss
@@ -151,7 +196,8 @@ class LitPet(pl.LightningModule):
         ], 0)
         int_feats = batch['features'].repeat([8, 1])
         with torch.no_grad():
-            pred = self(inp_image, int_feats).mean(1)
+            pred, image_features = self(inp_image, int_feats)
+            pred = pred.mean(1)
         pred = pred.view([8, batch['image'].shape[0]])
         # Average
         b = self.hparams.prediction_pet_crop_weight
@@ -190,13 +236,11 @@ class LitPet(pl.LightningModule):
 
         # Compute scores
         mse_score = ((predictions - targets)**2).mean()
+        mae_score = np.abs(predictions - targets).mean()
         rmse_score = np.sqrt(mse_score)
+        self.rmse_list.append(rmse_score)
         target_variance = ((targets - targets.mean())**2).mean()
         r2_score = (target_variance - mse_score) / target_variance
-
-        # Std of rmse
-        rmse_std = np.abs(predictions - targets).std()
-        rmse_and_std_score = rmse_score + rmse_std
 
         # Compute score for dogs separately
         mse_score_dogs = (((predictions - targets)**2) * dog_detected).sum() / dog_detected.sum()
@@ -222,21 +266,20 @@ class LitPet(pl.LightningModule):
 
             # Remember RMSE
             self.rmse_score = rmse_score
-            self.rmse_and_std_score = rmse_and_std_score
 
         # Log average pawpularity metrics
         metrics = {
             'cv_step': self.fold * self.hparams.max_epochs + self.current_epoch,
             f'{mode}/MSE': mse_score,
+            f'{mode}/MAE': mae_score,
             f'{mode}/RMSE': rmse_score,
-            f'{mode}/RMSE+std': rmse_and_std_score,
             f'{mode}/Dog_RMSE': rmse_score_dogs,
             f'{mode}/Cat_RMSE': rmse_score_cats,
             f'{mode}/R2': r2_score,
         }
         if self.current_epoch == self.hparams.max_epochs - 1:
             metrics['Best RMSE'] = self.rmse_score
-            metrics['Best RMSE+std'] = self.rmse_and_std_score
+            metrics['Avg RMSE over steps'] = np.mean(self.rmse_list)
             metrics['fold'] = self.fold
         self.log_dict(
             metrics,

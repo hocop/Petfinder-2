@@ -40,18 +40,18 @@ class SWIN(nn.Module):
             self.pet_net.layers[3].requires_grad_(False)
 
         # Replace head
-        self.pet_net.head = nn.Sequential(
-            nn.Dropout(dropout_1),
-            # Freezeout(0.1),
+        self.image_dense_layer = nn.Sequential(
             nn.Linear(
                 self.pet_net.head.in_features,
                 num_image_neurons
             ),
             nn.LayerNorm(num_image_neurons),
             nn.ReLU(True),
-            nn.Dropout(dropout_2),
-            # Freezeout(dropout),
         )
+        self.pet_net.head = nn.Identity()
+
+        self.dropout_1 = nn.Dropout(dropout_1)
+        self.dropout_2 = nn.Dropout(dropout_2)
 
         self.out_layer = nn.Linear(num_image_neurons + 14, 1)
 
@@ -62,16 +62,24 @@ class SWIN(nn.Module):
         # Extract features
         x = self.pet_net(image)
 
+        # Features without dropout
+        image_features = self.image_dense_layer(x)
+
+        # Features with dropout
+        x = self.dropout_1(x)
+        x = self.image_dense_layer(x)
+        x = self.dropout_2(x)
+
         # Predict score
         x = torch.cat([x, features], dim=1)
         x = self.out_layer(x)
 
         # Scale
         out = torch.sigmoid(x) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
-        return out
+        return out, image_features
     
     def l2(self):
-        w1 = (self.pet_net.head[1].weight**2).mean()
+        w1 = (self.image_dense_layer[1].weight**2).mean()
         w2 = (self.out_layer.weight**2).mean()
         return w1 + w2
 
