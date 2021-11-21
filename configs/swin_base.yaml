@@ -29,15 +29,15 @@ aug_brcon_prob: 0.8
 aug_hsv_prob: 0.63
 aug_gray_prob: 0.11
 
-# GAN
-old_domain_prob: 0.08306
-discrim_learning_rate: 0.001
-generator_loss_weight: 0.6058
-discrim_layers: 1
+# Muxip
+mixup_proba: 0.5
+mixup_alpha: 0.5
+
+# Old domain
+old_domain_prob: 0.0
 
 # Loss
-bce_weight_cat: 0.83
-bce_weight_dog: 0.52
+bce_weight: 0.67
 hinge_margin: 12.315
 
 # Predictions

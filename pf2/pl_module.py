@@ -45,29 +45,11 @@ class LitPet(pl.LightningModule):
                 regression_margin=self.hparams.regression_margin,
             )
 
-        # Domain adaptation GAN
-        if self.hparams.discrim_layers == 1:
-            self.discriminator = nn.Linear(
-                self.hparams.swin_num_image_neurons,
-                1
-            )
-        elif self.hparams.discrim_layers == 2:
-            self.discriminator = nn.Sequential(
-                nn.Linear(self.hparams.swin_num_image_neurons, 100),
-                nn.ReLU(True),
-                nn.Linear(100, 1),
-            )
-        self.loss_gan = nn.BCEWithLogitsLoss(reduction='none')
-
         self.loss_log = RegressionLogLossWithMargin(1, 100, self.hparams.regression_margin)
         self.loss_hinge = HingeLoss(self.hparams.hinge_margin)
 
-        self.loss_fn_cat = WeightedLoss(
-            self.hparams.bce_weight_cat,
-            self.loss_log, self.loss_hinge,
-        )
-        self.loss_fn_dog = WeightedLoss(
-            self.hparams.bce_weight_dog,
+        self.loss_fn = WeightedLoss(
+            self.hparams.bce_weight,
             self.loss_log, self.loss_hinge,
         )
 
@@ -78,7 +60,6 @@ class LitPet(pl.LightningModule):
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Model Parameters")
         parser.add_argument('--image_size', type=int, default=None)
-        parser.add_argument('--mixup_proba', type=float, default=None)
         parser.add_argument('--learning_rate', type=float, default=None)
         parser.add_argument('--weight_decay', type=float, default=None)
         parser.add_argument('--regression_margin', type=float, default=None)
@@ -90,30 +71,33 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--swin_attn_drop', type=float, default=None)
         parser.add_argument('--swin_freeze_layers', type=int, default=None)
         parser.add_argument('--detr_num_boxes', type=float, default=None)
-        parser.add_argument('--bce_weight_cat', type=float, default=None)
-        parser.add_argument('--bce_weight_dog', type=float, default=None)
+        parser.add_argument('--bce_weight', type=float, default=None)
         parser.add_argument('--prediction_lightness_delta', type=float, default=None)
         parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
-        # GAN
-        parser.add_argument('--discrim_learning_rate', type=float, default=None)
-        parser.add_argument('--generator_loss_weight', type=float, default=None)
-        parser.add_argument('--discrim_layers', type=int, default=None)
+        # Mixup
+        parser.add_argument('--mixup_proba', type=float, default=None)
+        parser.add_argument('--mixup_alpha', type=float, default=None)
         return parent_parser
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.pet_net.parameters(), lr=self.hparams.learning_rate)
-        if self.hparams.old_domain_prob <= 0:
-            return optimizer
-        optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=self.hparams.discrim_learning_rate)
-        return [optimizer, optimizer_d]
+        return optimizer
 
     def forward(self, image, features):
         x, image_features = self.pet_net(image, features)
         return x, image_features
 
-    def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, alpha: float = 1.0):
+    # def rand_index(self, cat_detected):
+    #     dog_detected = 1 - cat_detected
+    #     mask = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
+    #     # print('mask', mask.shape)
+    #     rnd = torch.rand(mask.shape, device=mask.device) * mask
+    #     rnd_idx = torch.argmax(rnd, dim=1)
+    #     return rnd_idx
+
+    def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, alpha: float):
         assert alpha > 0, "alpha should be larger than 0"
         assert x.size(0) > 1, "Mixup cannot be applied to a single instance."
 
@@ -128,50 +112,34 @@ class LitPet(pl.LightningModule):
         # Dict for metrics
         log_dict = {}
 
-        # Predict pawplarity
-        pred, image_features = self(batch['image'], batch['features'])
+        cat_detected = batch['cat_detected'].to(batch['target'].dtype)
+        # dog_detected = 1 - cat_detected
 
-        # Old domain mask
-        old_mask = (batch['target'] < 0).to(batch['target'].dtype)
-        new_mask = 1 - old_mask
-
-        if optimizer_idx == 0:
-            # Supervision loss (for pf2 images)
-            cat_detected = batch['cat_detected'].to(pred.dtype)
-            dog_detected = 1 - cat_detected
-            loss = (
-                self.loss_fn_cat(pred.mean(1), batch['target']) * cat_detected
-                +
-                self.loss_fn_dog(pred.mean(1), batch['target']) * dog_detected
+        if np.random.random() < self.hparams.mixup_proba:
+            # Mixup
+            mixed_x, mixed_feats, target_a, target_b, lam = self.mixup(
+                batch['image'], batch['features'], batch['target'],
+                alpha=self.hparams.mixup_alpha,
             )
-            loss = (loss * new_mask).sum() / (new_mask.sum() + 1e-9)
+            # Predict pawplarity
+            pred, image_features = self(mixed_x, mixed_feats)
+            # Supervision loss
+            loss_a = self.loss_log(pred.mean(1), target_a).mean()
+            loss_b = self.loss_log(pred.mean(1), target_b).mean()
+            loss = lam * loss_a + (1 - lam) * loss_b
+        else:
+            # Predict pawplarity
+            pred, image_features = self(batch['image'], batch['features'])
+            # Supervision loss
+            loss = self.loss_fn(pred.mean(1), batch['target']).mean()
 
-            # Domain adaptation generator loss (for old images)
-            if self.hparams.old_domain_prob > 0:
-                loss_gen = self.loss_gan(
-                    self.discriminator(image_features)[:, 0],
-                    torch.zeros_like(old_mask),
-                )
-                loss_gen = (loss_gen * old_mask).sum() / (old_mask.sum() + 1e-9)
-                loss = loss + loss_gen * self.hparams.generator_loss_weight
+        # Weight decay
+        loss = loss + self.pet_net.l2() * self.hparams.weight_decay
 
-            # Weight decay
-            loss = loss + self.pet_net.l2() * self.hparams.weight_decay
-
-            log_dict['train/loss'] = loss
-
-        if optimizer_idx == 1:
-            # Domain adaptation discriminator loss
-            loss = self.loss_gan(
-                self.discriminator(image_features.detach())[:, 0],
-                old_mask,
-            )
-            loss = loss.mean()
-
-            log_dict['train/discrim_loss'] = loss
+        log_dict['train/loss'] = loss
 
         # Measure MSE
-        log_dict['train/mse'] = (((pred.mean(1) - batch['target'])**2) * new_mask).sum() / new_mask.sum()
+        log_dict['train/mse'] = ((pred.mean(1) - batch['target'])**2).mean()
 
         if loss != loss:
             print('ERROR: NaN loss!')
