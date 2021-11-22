@@ -10,42 +10,51 @@ regression_margin: 1.594
 model_type: swin
 swin_model_name: swin_base_patch4_window7_224
 swin_num_image_neurons: 2000
-swin_dropout_1: 0.4209
-swin_dropout_2: 0.6479
+swin_dropout_1: 0.436
+swin_dropout_2: 0.640
 swin_attn_drop: 0 #0.01968
 swin_freeze_layers: 3
 
 # Augmentation
-freeze_augmentations: 0.08384
-replace_bg_prob: 0.1954
-glob_crop_prob: 0.531
-pet_crop_prob: 0.3464
-aug_brightness_lim: 0.1
-aug_contrast_lim: 0.1
-aug_hue_lim: 0.2
-aug_sat_lim: 0.2
-aug_val_lim: 0.2
-aug_brcon_prob: 0.5
-aug_hsv_prob: 0.5
-aug_gray_prob: 0.0
+freeze_augmentations: 4.85
+replace_bg_prob: 0.19
+glob_crop_prob: 0.4
+pet_crop_prob: 0.2709
+aug_brightness_lim: 0.136
+aug_contrast_lim: 0.366
+aug_hue_lim: 0.08
+aug_sat_lim: 0.33
+aug_val_lim: 0.22
+aug_brcon_prob: 0.8
+aug_hsv_prob: 0.63
+aug_gray_prob: 0.11
+aug_gblur_prob: 0.0
+aug_affine_prob: 0.2
+
+# Mixup
+mix_proba: 0.5
+mixup_alpha: 0.2
+cutmix_alpha: 1.0
+cutmix_proba: 0.0
+
+# Old domain
+old_domain_prob: 0.0
 
 # Loss
-bce_weight_cat: 0.7446
-bce_weight_dog: 0.8141
+bce_weight: 0.67
 hinge_margin: 12.315
 
 # Predictions
-prediction_lightness_delta: 0.06269
-prediction_pet_crop_weight: 0.5195
-prediction_glob_crop_weight: 0.4225
+prediction_lightness_delta: 0.083
+prediction_pet_crop_weight: 0.6
+prediction_glob_crop_weight: 0.4968
 
 # Training parameters
 num_folds: 10
-max_epochs: 10
+max_epochs: 16
 batch_size: 25
-learning_rate: 0.00002583
-weight_decay: 0.0007742
-mixup_proba: -1
+learning_rate: 0.00002878
+weight_decay: 0.000463
 
 # Hardware
 cpus: 6

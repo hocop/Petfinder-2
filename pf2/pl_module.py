@@ -227,7 +227,8 @@ class LitPet(pl.LightningModule):
         mse_score = ((predictions - targets)**2).mean()
         mae_score = np.abs(predictions - targets).mean()
         rmse_score = np.sqrt(mse_score)
-        self.rmse_list.append(rmse_score)
+        if not self.trainer.sanity_checking:
+            self.rmse_list.append(rmse_score)
         target_variance = ((targets - targets.mean())**2).mean()
         r2_score = (target_variance - mse_score) / target_variance
 
