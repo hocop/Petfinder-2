@@ -55,6 +55,7 @@ class LitPet(pl.LightningModule):
 
         self.rmse_score = 1000.0
         self.rmse_list = []
+        self.top3_avg = None
 
     @staticmethod
     def add_argparse_args(parent_parser):
@@ -77,8 +78,10 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
         # Mixup
-        parser.add_argument('--mixup_proba', type=float, default=None)
+        parser.add_argument('--mix_proba', type=float, default=None)
         parser.add_argument('--mixup_alpha', type=float, default=None)
+        parser.add_argument('--cutmix_alpha', type=float, default=None)
+        parser.add_argument('--cutmix_proba', type=float, default=None)
         return parent_parser
 
     def configure_optimizers(self):
@@ -89,23 +92,41 @@ class LitPet(pl.LightningModule):
         x, image_features = self.pet_net(image, features)
         return x, image_features
 
-    # def rand_index(self, cat_detected):
-    #     dog_detected = 1 - cat_detected
-    #     mask = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
-    #     # print('mask', mask.shape)
-    #     rnd = torch.rand(mask.shape, device=mask.device) * mask
-    #     rnd_idx = torch.argmax(rnd, dim=1)
-    #     return rnd_idx
+    def rand_index(self, cat_detected):
+        dog_detected = 1 - cat_detected
+        mask = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
+        # print('mask', mask.shape)
+        rnd = torch.rand(mask.shape, device=mask.device) * mask
+        rnd_idx = torch.argmax(rnd, dim=1)
+        return rnd_idx
 
-    def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, alpha: float):
-        assert alpha > 0, "alpha should be larger than 0"
+    def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, rand_index=None):
+        assert self.hparams.mixup_alpha > 0, "alpha should be larger than 0"
         assert x.size(0) > 1, "Mixup cannot be applied to a single instance."
 
-        lam = np.random.beta(alpha, alpha)
-        rand_index = torch.randperm(x.size()[0])
-        mixed_x = lam * x + (1 - lam) * x[rand_index]
+        if rand_index is None:
+            rand_index = torch.randperm(x.size()[0])
+
+        # Mix images
+        if np.random.random() < self.hparams.cutmix_proba:
+            # Use cutmix
+            lam = np.random.beta(self.hparams.cutmix_alpha, self.hparams.cutmix_alpha)
+            bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+            mixed_x = x.detach().clone()
+            mixed_x[:, :, bbx1:bbx2, bby1:bby2] = x[rand_index, :, bbx1:bbx2, bby1:bby2]
+            # Adjust lambda to exactly match pixel ratio
+            lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (x.size()[-1] * x.size()[-2]))
+        else:
+            # Use mixup
+            lam = np.random.beta(self.hparams.mixup_alpha, self.hparams.mixup_alpha)
+            mixed_x = lam * x + (1 - lam) * x[rand_index]
+
+        # Mixup feats
         mixed_feats = lam * feats + (1 - lam) * feats[rand_index]
+
+        # Shuffle targets
         target_a, target_b = y, y[rand_index]
+
         return mixed_x, mixed_feats, target_a, target_b, lam
 
     def training_step(self, batch, batch_idx, optimizer_idx=0):
@@ -115,11 +136,11 @@ class LitPet(pl.LightningModule):
         cat_detected = batch['cat_detected'].to(batch['target'].dtype)
         # dog_detected = 1 - cat_detected
 
-        if np.random.random() < self.hparams.mixup_proba:
+        if np.random.random() < self.hparams.mix_proba:
             # Mixup
             mixed_x, mixed_feats, target_a, target_b, lam = self.mixup(
                 batch['image'], batch['features'], batch['target'],
-                alpha=self.hparams.mixup_alpha,
+                rand_index=self.rand_index(cat_detected),
             )
             # Predict pawplarity
             pred, image_features = self(mixed_x, mixed_feats)
@@ -146,7 +167,7 @@ class LitPet(pl.LightningModule):
 
         self.log_dict(
             log_dict,
-            on_step=False, on_epoch=True, prog_bar=True, logger=True
+            on_step=False, on_epoch=True, prog_bar=False, logger=True
         )
 
         return loss
@@ -246,8 +267,10 @@ class LitPet(pl.LightningModule):
             f'{mode}/R2': r2_score,
         }
         if self.current_epoch == self.hparams.max_epochs - 1:
+            self.top3_avg = np.array(self.rmse_list)[np.argsort(self.rmse_list)[:3]].mean()
             metrics['Best RMSE'] = self.rmse_score
             metrics['Avg RMSE over steps'] = np.mean(self.rmse_list)
+            metrics['RMSE top3 avg'] = self.top3_avg
             metrics['fold'] = self.fold
         self.log_dict(
             metrics,
@@ -265,3 +288,23 @@ class LitPet(pl.LightningModule):
         tqdm_dict = super().get_progress_bar_dict()
         tqdm_dict.pop("v_num", None)
         return tqdm_dict
+
+
+
+def rand_bbox(size, lam):
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = np.int(W * cut_rat)
+    cut_h = np.int(H * cut_rat)
+
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2

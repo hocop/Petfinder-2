@@ -48,6 +48,8 @@ class PetDataModule(pl.LightningDataModule):
         parser.add_argument('--aug_brcon_prob', type=float, default=None)
         parser.add_argument('--aug_hsv_prob', type=float, default=None)
         parser.add_argument('--aug_gray_prob', type=float, default=None)
+        parser.add_argument('--aug_gblur_prob', type=float, default=None)
+        parser.add_argument('--aug_affine_prob', type=float, default=None)
         # GAN parameters
         parser.add_argument('--old_domain_prob', type=float, default=None)
         return parent_parser
@@ -79,8 +81,8 @@ class PetDataModule(pl.LightningDataModule):
         # Augmentations for training
         augs_coef = min(self.epoch_count / self.config.freeze_augmentations, 1.0)
         augmentations = A.Compose([
-            # Flips
-            A.HorizontalFlip(p=0.5),
+            # Blur
+            A.GaussianBlur(p=self.config.aug_gblur_prob * augs_coef),
             # Color transforms
             A.RandomBrightnessContrast(
                 brightness_limit=(-self.config.aug_brightness_lim * augs_coef, self.config.aug_brightness_lim * augs_coef),
@@ -93,9 +95,17 @@ class PetDataModule(pl.LightningDataModule):
                 val_shift_limit=self.config.aug_val_lim * augs_coef,
                 p=self.config.aug_hsv_prob
             ),
-            A.ToGray(p=self.config.aug_gray_prob * augs_coef)
+            A.ToGray(p=self.config.aug_gray_prob * augs_coef),
+            # Transforms
+            A.ShiftScaleRotate(
+                shift_limit=0.0625 * augs_coef,
+                scale_limit=0.1 * augs_coef,
+                rotate_limit=int(45 * augs_coef),
+                p=self.config.aug_affine_prob,
+            ),
         ])
-        self.train_dataset.augmentations = augmentations
+        self.train_dataset.augmentations_before_crop = augmentations
+        self.train_dataset.augmentations_after_crop = A.HorizontalFlip(p=0.5)
         self.train_dataset.replace_bg_prob = self.config.replace_bg_prob * augs_coef
         self.train_dataset.glob_crop_prob = self.config.glob_crop_prob
         self.train_dataset.pet_crop_prob = self.config.pet_crop_prob
@@ -144,7 +154,8 @@ class PetDataset(torch.utils.data.Dataset):
 
         self.data_path = data_path
         self.resize = (image_size, image_size) if image_size is not None else None
-        self.augmentations = augmentations
+        self.augmentations_before_crop = augmentations
+        self.augmentations_after_crop = None
         self.channels_first = channels_first
         self.glob_crop_prob = glob_crop_prob
         self.pet_crop_prob = pet_crop_prob
@@ -206,6 +217,12 @@ class PetDataset(torch.utils.data.Dataset):
             img_path = os.path.join(img_path, np.random.choice(os.listdir(img_path)))
             target = np.array(-100.0).astype('float32')
         image = cv2.imread(img_path)[:, :, ::-1]
+
+        # Augment image
+        if self.augmentations_before_crop is not None:
+            image = self.augmentations_before_crop(
+                image=image,
+            )['image']
 
         # Add image size to features
         features = np.concatenate([
@@ -279,22 +296,21 @@ class PetDataset(torch.utils.data.Dataset):
 
         # Replace image with only pet cropped
         replace_with_cropped = np.random.random() < self.pet_crop_prob and not old_domain
-        
+
         # Replace image with all pets cropped
         replace_with_glob = np.random.random() < self.glob_crop_prob and not old_domain
 
-        # Augment image
-        if self.augmentations is not None:
-            image_pet = self.augmentations(
+        # Augment images
+        if self.augmentations_after_crop is not None:
+            image_pet = self.augmentations_after_crop(
                 image=image_pet,
             )['image']
-            image_glob = self.augmentations(
+            image_glob = self.augmentations_after_crop(
                 image=image_glob,
             )['image']
-            if not (replace_with_cropped or replace_with_glob):
-                image = self.augmentations(
-                    image=image,
-                )['image']
+            image = self.augmentations_after_crop(
+                image=image,
+            )['image']
 
         # Resize and preprocess images
         if not old_domain:

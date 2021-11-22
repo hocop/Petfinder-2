@@ -11,13 +11,14 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 ```
 
 # TODO
+* https://www.kaggle.com/c/petfinder-pawpularity-score/discussion/288896 
 * stop gradient where there is no animal
-* train separately on different image aspect ratios
 * mixup / manifold mixup
 * double model with softmax
-* dropout before linear
-* classify dog breeds
 * SVR boost
-* freezeout
 * pretrain on pf1
-* global weight decay
+* lr scheduler
+* SGD with momentum
+* `aug_anneling = max_epochs / 2`
+* top3 average
+* freeze first layers for several steps

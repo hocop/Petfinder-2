@@ -39,7 +39,7 @@ def main(config):
 
     kf = StratifiedKFold(config.num_folds, shuffle=True, random_state=config.random_seed)
 
-    rmse_scores, rmse_avg_scores = [], []
+    rmse_scores, rmse_avg_scores, rmse_top3_scores = [], [], []
 
     for fold, (train_index, val_index) in enumerate(kf.split(data_train, bins)):
         print('#' * 50)
@@ -89,6 +89,7 @@ def main(config):
         print('RMSE:', lit_module.rmse_score)
         rmse_scores.append(lit_module.rmse_score)
         rmse_avg_scores.append(np.mean(lit_module.rmse_list))
+        rmse_top3_scores.append(lit_module.top3_avg)
 
         if config.random_seed == 420:
             break
@@ -100,7 +101,8 @@ def main(config):
         'CV RMSE': np.mean(rmse_scores),
         'CV RMSE std': np.std(rmse_scores),
         'CV RMSE+std': np.mean(rmse_scores) + np.std(rmse_scores),
-        'RMSE global average': np.mean(rmse_avg_scores),
+        'CV RMSE average': np.mean(rmse_avg_scores),
+        'CV RMSE Top3': np.mean(rmse_top3_scores),
     })
 
 

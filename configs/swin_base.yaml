@@ -28,10 +28,14 @@ aug_val_lim: 0.22
 aug_brcon_prob: 0.8
 aug_hsv_prob: 0.63
 aug_gray_prob: 0.11
+aug_gblur_prob: 0.0
+aug_affine_prob: 0.2
 
-# Muxip
-mixup_proba: 0.5
-mixup_alpha: 0.5
+# Mixup
+mix_proba: 0.5
+mixup_alpha: 0.2
+cutmix_alpha: 1.0
+cutmix_proba: 0.0
 
 # Old domain
 old_domain_prob: 0.0
@@ -47,11 +51,10 @@ prediction_glob_crop_weight: 0.4968
 
 # Training parameters
 num_folds: 10
-max_epochs: 10
+max_epochs: 16
 batch_size: 25
 learning_rate: 0.00002878
 weight_decay: 0.000463
-mixup_proba: -1
 
 # Hardware
 cpus: 6
