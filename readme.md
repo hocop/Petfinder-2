@@ -19,6 +19,5 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 * pretrain on pf1
 * lr scheduler
 * SGD with momentum
-* `aug_anneling = max_epochs / 2`
-* top3 average
 * freeze first layers for several steps
+* many heads. avg for prediction, min for mixup

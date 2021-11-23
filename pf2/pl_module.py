@@ -77,6 +77,9 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
+        # Schedule
+        parser.add_argument('--freeze_backend_steps', type=int, default=None)
+        parser.add_argument('--freeze_backend_last_epochs', type=int, default=None)
         # Mixup
         parser.add_argument('--mix_proba', type=float, default=None)
         parser.add_argument('--mixup_alpha', type=float, default=None)
@@ -88,8 +91,8 @@ class LitPet(pl.LightningModule):
         optimizer = torch.optim.Adam(self.pet_net.parameters(), lr=self.hparams.learning_rate)
         return optimizer
 
-    def forward(self, image, features):
-        x, image_features = self.pet_net(image, features)
+    def forward(self, image, features, freeze_backend=False):
+        x, image_features = self.pet_net(image, features, freeze_backend=freeze_backend)
         return x, image_features
 
     def rand_index(self, cat_detected):
@@ -136,6 +139,12 @@ class LitPet(pl.LightningModule):
         cat_detected = batch['cat_detected'].to(batch['target'].dtype)
         # dog_detected = 1 - cat_detected
 
+        freeze_backend = (
+            self.global_step < self.hparams.freeze_backend_steps
+            or
+            self.current_epoch >= self.hparams.max_epochs - self.hparams.freeze_backend_last_epochs
+        )
+
         if np.random.random() < self.hparams.mix_proba:
             # Mixup
             mixed_x, mixed_feats, target_a, target_b, lam = self.mixup(
@@ -143,14 +152,14 @@ class LitPet(pl.LightningModule):
                 rand_index=self.rand_index(cat_detected),
             )
             # Predict pawplarity
-            pred, image_features = self(mixed_x, mixed_feats)
+            pred, image_features = self(mixed_x, mixed_feats, freeze_backend=freeze_backend)
             # Supervision loss
             loss_a = self.loss_log(pred.mean(1), target_a).mean()
             loss_b = self.loss_log(pred.mean(1), target_b).mean()
             loss = lam * loss_a + (1 - lam) * loss_b
         else:
             # Predict pawplarity
-            pred, image_features = self(batch['image'], batch['features'])
+            pred, image_features = self(batch['image'], batch['features'], freeze_backend=freeze_backend)
             # Supervision loss
             loss = self.loss_fn(pred.mean(1), batch['target']).mean()
 

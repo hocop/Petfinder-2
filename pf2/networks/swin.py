@@ -55,20 +55,23 @@ class SWIN(nn.Module):
 
         self.out_layer = nn.Linear(num_image_neurons + 14, 1)
 
-    def forward(self, image, features):
+    def forward(self, image, features, freeze_backend=False):
         # Normalize input
         image = self.norm_input(image)
 
         # Extract features
         x = self.pet_net(image)
+        if freeze_backend:
+            x = x.detach()
 
         # Features without dropout
-        image_features = self.image_dense_layer(x)
+        # image_features = self.image_dense_layer(x)
 
         # Features with dropout
         x = self.dropout_1(x)
         x = self.image_dense_layer(x)
         x = self.dropout_2(x)
+        image_features = x
 
         # Predict score
         x = torch.cat([x, features], dim=1)
