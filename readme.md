@@ -16,3 +16,4 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 * pretrain on pf1
 * many heads. avg for prediction, min for mixup
 * xavier weights
+* classifier to predict pawp=100

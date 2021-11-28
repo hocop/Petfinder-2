@@ -67,7 +67,7 @@ freeze_backend_last_epochs: 0
 
 # Training parameters
 num_folds: 10
-max_epochs: 16
+max_epochs: 30
 batch_size: 24
 weight_decay: 0.00003
 

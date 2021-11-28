@@ -99,9 +99,6 @@ def main(config):
         rmse_avg_scores.append(np.mean(lit_module.rmse_list))
         rmse_top3_scores.append(lit_module.top3_avg)
 
-        if config.random_seed == 420:
-            break
-
     print('RMSE:', rmse_scores)
     print('RMSE:', np.mean(rmse_scores), '+-', np.std(rmse_scores))
 
