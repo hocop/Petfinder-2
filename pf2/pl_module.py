@@ -61,7 +61,6 @@ class LitPet(pl.LightningModule):
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Model Parameters")
         parser.add_argument('--image_size', type=int, default=None)
-        parser.add_argument('--learning_rate', type=float, default=None)
         parser.add_argument('--weight_decay', type=float, default=None)
         parser.add_argument('--regression_margin', type=float, default=None)
         parser.add_argument('--model_type', type=str, default=None)
@@ -77,9 +76,17 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
+        # Optimizer
+        parser.add_argument('--optimizer_type', type=str, default=None)
+        parser.add_argument('--learning_rate', type=float, default=None)
+        parser.add_argument('--sgd_momentum', type=float, default=None)
+        parser.add_argument('--sgd_dampening', type=float, default=None)
+        parser.add_argument('--sgd_nesterov', type=bool, default=None)
         # Schedule
         parser.add_argument('--freeze_backend_steps', type=int, default=None)
         parser.add_argument('--freeze_backend_last_epochs', type=int, default=None)
+        parser.add_argument('--scheduler_type', type=str, default=None)
+        parser.add_argument('--scheduler_cos_t_max', type=int, default=None)
         # Mixup
         parser.add_argument('--mix_proba', type=float, default=None)
         parser.add_argument('--mixup_alpha', type=float, default=None)
@@ -88,8 +95,33 @@ class LitPet(pl.LightningModule):
         return parent_parser
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.pet_net.parameters(), lr=self.hparams.learning_rate)
-        return optimizer
+        if self.hparams.optimizer_type == 'adam':
+            optimizer = torch.optim.Adam(
+                self.pet_net.parameters(),
+                lr=self.hparams.learning_rate
+            )
+        elif self.hparams.optimizer_type == 'sgd':
+            optimizer = torch.optim.SGD(
+                self.pet_net.parameters(),
+                lr=self.hparams.learning_rate,
+                momentum=self.hparams.sgd_momentum,
+                dampening=self.hparams.sgd_dampening * float(not self.hparams.sgd_nesterov),
+                nesterov=self.hparams.sgd_nesterov,
+            )
+        if self.hparams.scheduler_type == 'none':
+            return optimizer
+        if self.hparams.scheduler_type == 'cos':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.hparams.scheduler_cos_t_max,
+            )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step',
+            }
+        }
 
     def forward(self, image, features, freeze_backend=False):
         x, image_features = self.pet_net(image, features, freeze_backend=freeze_backend)
@@ -138,6 +170,12 @@ class LitPet(pl.LightningModule):
 
         cat_detected = batch['cat_detected'].to(batch['target'].dtype)
         # dog_detected = 1 - cat_detected
+
+        if self.hparams.scheduler_type != 'none':
+            self.log_dict(
+                {'lr': self.lr_schedulers().get_last_lr()[0]},
+                on_step=True, on_epoch=False, prog_bar=True, logger=False
+            )
 
         freeze_backend = (
             self.global_step < self.hparams.freeze_backend_steps

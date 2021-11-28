@@ -85,6 +85,10 @@ def main(config):
             data_module,
         )
 
+        # TODO Train on val for one more epoch
+        if config.save == 1:
+            pass
+
         # Remember score
         print('RMSE:', lit_module.rmse_score)
         rmse_scores.append(lit_module.rmse_score)

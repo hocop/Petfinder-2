@@ -32,10 +32,10 @@ aug_gblur_prob: 0.0
 aug_affine_prob: 0.2
 
 # Mixup
-mix_proba: 0.5
-mixup_alpha: 0.2
+mix_proba: 0.7
+mixup_alpha: 0.11
 cutmix_alpha: 1.0
-cutmix_proba: 0.0
+cutmix_proba: 0.02
 
 # Old domain
 old_domain_prob: 0.0
@@ -49,12 +49,26 @@ prediction_lightness_delta: 0.083
 prediction_pet_crop_weight: 0.6
 prediction_glob_crop_weight: 0.4968
 
+# Optimizer params
+optimizer_type: adam
+learning_rate: 0.000025
+# optimizer_type: sgd
+# learning_rate: 0.000025
+# sgd_momentum: 0.1
+# sgd_dampening: 0.1
+# sgd_nesterov: true
+
+# Schedule
+scheduler_type: cos
+scheduler_cos_t_max: 2000
+freeze_backend_steps: 40
+freeze_backend_last_epochs: 4
+
 # Training parameters
 num_folds: 10
 max_epochs: 16
-batch_size: 25
-learning_rate: 0.00002878
-weight_decay: 0.000463
+batch_size: 24
+weight_decay: 0.00003
 
 # Hardware
 cpus: 6

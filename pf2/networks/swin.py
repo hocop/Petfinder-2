@@ -55,7 +55,7 @@ class SWIN(nn.Module):
 
         self.out_layer = nn.Linear(num_image_neurons + 14, 1)
 
-    def forward(self, image, features, freeze_backend=False):
+    def forward(self, image, features, freeze_backend=torch.tensor(False)):
         # Normalize input
         image = self.norm_input(image)
 
