@@ -71,11 +71,14 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--swin_attn_drop', type=float, default=None)
         parser.add_argument('--swin_freeze_layers', type=int, default=None)
         parser.add_argument('--detr_num_boxes', type=float, default=None)
+        # Loss
         parser.add_argument('--bce_weight', type=float, default=None)
+        parser.add_argument('--hinge_margin', type=float, default=None)
+        # Prediction
         parser.add_argument('--prediction_lightness_delta', type=float, default=None)
+        parser.add_argument('--prediction_orig_weight', type=float, default=None)
         parser.add_argument('--prediction_pet_crop_weight', type=float, default=None)
         parser.add_argument('--prediction_glob_crop_weight', type=float, default=None)
-        parser.add_argument('--hinge_margin', type=float, default=None)
         # Optimizer
         parser.add_argument('--optimizer_type', type=str, default=None)
         parser.add_argument('--learning_rate', type=float, default=None)
@@ -123,7 +126,7 @@ class LitPet(pl.LightningModule):
             }
         }
 
-    def forward(self, image, features, freeze_backend=False):
+    def forward(self, image, features, freeze_backend=torch.tensor(False)):
         x, image_features = self.pet_net(image, features, freeze_backend=freeze_backend)
         return x, image_features
 
@@ -219,10 +222,11 @@ class LitPet(pl.LightningModule):
 
         return loss
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
+    def make_prediction(self, batch):
         # Make darker and lighter versions
         dark = batch['image'] * (1 - self.hparams.prediction_lightness_delta)
         light = (batch['image'] * (1 + self.hparams.prediction_lightness_delta)).clip(0, 1)
+
         # Predict pawplarity
         inp_image = torch.cat([
             dark, dark.flip(-1),
@@ -235,14 +239,21 @@ class LitPet(pl.LightningModule):
             pred, image_features = self(inp_image, int_feats)
             pred = pred.mean(1)
         pred = pred.view([8, batch['image'].shape[0]])
+
         # Average
+        a = self.hparams.prediction_orig_weight
         b = self.hparams.prediction_pet_crop_weight
         c = self.hparams.prediction_glob_crop_weight
-        s = 1 + b + c
-        a = 1 / s
+        s = a + b + c
+        a = a / s
         b = b / s
         c = c / s
         pred = a * pred[:4].mean(0) + b * pred[4:6].mean(0) + c * pred[6:].mean(0)
+
+        return pred
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
+        pred = self.make_prediction(batch)
         pred = pred.clamp(1, 100)
         return {
             'pred': pred.detach().cpu().numpy(),
@@ -332,10 +343,10 @@ class LitPet(pl.LightningModule):
     def test_epoch_end(self, test_step_outputs):
         return self.validation_epoch_end(test_step_outputs, mode='test')
 
-    def get_progress_bar_dict(self):
-        tqdm_dict = super().get_progress_bar_dict()
-        tqdm_dict.pop("v_num", None)
-        return tqdm_dict
+    # def get_progress_bar_dict(self):
+    #     tqdm_dict = super().get_progress_bar_dict()
+    #     tqdm_dict.pop("v_num", None)
+    #     return tqdm_dict
 
 
 

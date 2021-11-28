@@ -22,6 +22,11 @@ class PetDataModule(pl.LightningDataModule):
         self.train_table = train_table
         self.valid_table = valid_table
 
+        # Clear up training data
+        #mask = (self.train_table.Pawpularity < 10) | (self.train_table.Pawpularity == 100)
+        mask = self.train_table.Pawpularity == 100
+        self.train_table = self.train_table[~mask]
+
         self.train_dataset = None
         self.val_datasets = None
         self.test_datasets = None
@@ -32,7 +37,6 @@ class PetDataModule(pl.LightningDataModule):
         parser = parent_parser.add_argument_group("Dataloader parameters")
         parser.add_argument('--data_path', type=str, default=None)
         parser.add_argument('--choose_categories', type=str, default=None)
-        parser.add_argument('--num_folds', type=int, default=None)
         parser.add_argument('--batch_size', type=int, default=None)
         parser.add_argument('--freeze_augmentations', type=float, default=None)
         parser.add_argument('--cpus', type=int, default=None)

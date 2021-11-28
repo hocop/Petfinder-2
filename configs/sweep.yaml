@@ -77,3 +77,4 @@ gpus: 1
 # Run-type-specific
 random_seed: 420
 wandb_project: pf2
+max_folds: 1

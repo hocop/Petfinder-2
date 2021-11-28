@@ -1,5 +1,5 @@
 # Data paths
-data_path: /home/ruslan/data/datasets_ssd/kaggle/petfinder-pawpularity-score/
+data_path: /home/ruslan/data/datasets_ssd/kaggle/petfinder-adoption-prediction/
 
 # Training parameters
 choose_categories: 'all'
@@ -77,5 +77,5 @@ gpus: 1
 
 # Run-type-specific
 random_seed: 42
-wandb_project: pf2
-max_folds: -1
+wandb_project: pf_old
+max_folds: 1

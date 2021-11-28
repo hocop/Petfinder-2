@@ -1,5 +1,5 @@
 '''
-Training script
+Prediction script
 '''
 
 import argparse
@@ -13,6 +13,7 @@ import pandas as pd
 import os
 import wandb
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from tqdm import tqdm
 
 import pf2
 
@@ -39,16 +40,13 @@ def main(config):
 
     kf = StratifiedKFold(config.num_folds, shuffle=True, random_state=config.random_seed)
 
-    rmse_scores, rmse_avg_scores, rmse_top3_scores = [], [], []
+    predictions = data_train['Pawpularity'].copy()
+    predictions.iloc[:] = 0.0
 
     for fold, (train_index, val_index) in enumerate(kf.split(data_train, bins)):
         print('#' * 50)
         print(f'Fold {fold + 1} / {config.num_folds}')
         print('#' * 50)
-
-        if fold == config.max_folds:
-            print('max_folds reached')
-            break
 
         # Create train, valid, and test datasets
         data_module = pf2.datasets.PetDataModule(
@@ -57,61 +55,42 @@ def main(config):
             data_train.iloc[val_index],
         )
 
-        # Save path
-        if config.save == 1:
-            model_path = os.path.join('saved_model', config.name)
-            if not os.path.isdir(model_path):
-                os.makedirs(model_path)
-            model_path = os.path.join(model_path, f'fold_{fold}.pt')
-        else:
-            model_path = None
+        # Load path
+        model_path = os.path.join('saved_model', config.name)
+        if not os.path.isdir(model_path):
+            os.makedirs(model_path)
+        model_path = os.path.join(model_path, f'fold_{fold}.pt')
 
         # Create lit module
         lit_module = pf2.pl_module.LitPet(
             fold=fold,
-            model_path=model_path,
             **config.__dict__
         )
-        if config.load_from is not None:
-            lit_module = lit_module.load_from_checkpoint(checkpoint_path=config.load_from)
 
-        # Create trainer
-        trainer = pl.Trainer.from_argparse_args(
-            config,
-            logger=logger,
-            reload_dataloaders_every_n_epochs=1,
-        )
+        # Predict
+        lit_module.pet_net = torch.jit.load(model_path).eval().cuda()
+        data_module.setup()
+        val_dataloader = data_module.val_dataloader()
+        fold_preds = []
+        for batch in tqdm(val_dataloader):
+            batch = {key: batch[key].cuda() for key in batch}
+            pred = lit_module.make_prediction(batch)
+            fold_preds.append(pred.detach().cpu().numpy())
+        fold_preds = np.concatenate(fold_preds, 0)
 
-        # Train model
-        # pylint: disable=no-member
-        trainer.fit(
-            lit_module,
-            data_module,
-        )
+        # Record predictions
+        predictions.iloc[val_index] = fold_preds
 
-        # TODO Train on val for one more epoch
-        if config.save == 1:
-            pass
+    # print(predictions)
+    residual = predictions.values - data_train['Pawpularity'].values
+    rmse_score = np.sqrt(np.mean(residual**2))
+    print('RMSE', rmse_score)
 
-        # Remember score
-        print('RMSE:', lit_module.rmse_score)
-        rmse_scores.append(lit_module.rmse_score)
-        rmse_avg_scores.append(np.mean(lit_module.rmse_list))
-        rmse_top3_scores.append(lit_module.top3_avg)
-
-        if config.random_seed == 420:
-            break
-
-    print('RMSE:', rmse_scores)
-    print('RMSE:', np.mean(rmse_scores), '+-', np.std(rmse_scores))
-
-    wandb.log({
-        'CV RMSE': np.mean(rmse_scores),
-        'CV RMSE std': np.std(rmse_scores),
-        'CV RMSE+std': np.mean(rmse_scores) + np.std(rmse_scores),
-        'CV RMSE average': np.mean(rmse_avg_scores),
-        'CV RMSE Top3': np.mean(rmse_top3_scores),
-    })
+    # Save predictions
+    submission = pd.DataFrame(columns=['Id', 'Pawpularity'])
+    submission['Id'] = data_train['Id']
+    submission['Pawpularity'] = predictions
+    submission.to_csv('oof_prediction.csv', index=False)
 
 
 if __name__ == '__main__':
@@ -128,21 +107,6 @@ if __name__ == '__main__':
     parser.add_argument(
         '--name', type=str, default=None,
         help='name of the experiment for logging')
-    parser.add_argument(
-        '--wandb_project', type=str, default=None,
-        help='project name for Weights&Biases')
-    parser.add_argument(
-        '--load_from', type=str, default=None,
-        help='saved checkpoint')
-    parser.add_argument(
-        '--save', type=int, default=0,
-        help='If 1, save trained model to ./saved_models/{name}/')
-    parser.add_argument(
-        '--num_folds', type=int, default=None
-    )
-    parser.add_argument(
-        '--max_folds', type=int, default=None
-    )
 
     parser = pf2.pl_module.LitPet.add_argparse_args(parser)
     parser = pf2.datasets.PetDataModule.add_argparse_args(parser)
