@@ -6,8 +6,7 @@ choose_categories: 'all'
 
 # Model parameters
 image_size: 224
-regression_margin_top: 10
-regression_margin_bot: 1.6
+regression_margin: 1.594
 model_type: swin
 swin_model_name: swin_base_patch4_window7_224
 swin_num_image_neurons: 2000
@@ -46,10 +45,9 @@ bce_weight: 0.67
 hinge_margin: 12.315
 
 # Predictions
-prediction_lightness_delta: 0.08
-prediction_orig_weight: 1.0
-prediction_pet_crop_weight: 0.5
-prediction_glob_crop_weight: 1.0
+prediction_lightness_delta: 0.083
+prediction_pet_crop_weight: 0.6
+prediction_glob_crop_weight: 0.4968
 
 # Optimizer params
 optimizer_type: adam
@@ -61,23 +59,22 @@ learning_rate: 0.000025
 # sgd_nesterov: true
 
 # Schedule
-scheduler_type: none
-scheduler_cos_t_max: 1000
+scheduler_type: cos
+scheduler_cos_t_max: 2000
 freeze_backend_steps: 40
-freeze_backend_last_epochs: 6
+freeze_backend_last_epochs: 4
 
 # Training parameters
 num_folds: 10
 max_epochs: 16
 batch_size: 24
-weight_decay: 0.00001
-load_from: saved_model/pf_old_epochs2/fold_0.pt
+weight_decay: 0.00003
 
 # Hardware
 cpus: 6
 gpus: 1
 
 # Run-type-specific
-random_seed: 42
+random_seed: 420
 wandb_project: pf2
-max_folds: -1
+max_folds: 1

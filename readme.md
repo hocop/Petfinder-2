@@ -11,13 +11,9 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 ```
 
 # TODO
-* stop gradient where there is no animal
-* train separately on different image aspect ratios
-* mixup / manifold mixup
-* double model with softmax
-* dropout before linear
-* classify dog breeds
+* https://www.kaggle.com/c/petfinder-pawpularity-score/discussion/288896 
 * SVR boost
-* freezeout
-* pretrain on pf1
-* global weight decay
+* many heads. avg for prediction, min for mixup
+* classifier to predict pawp=100
+* load best model before freezing backend
+* add original to slow predict
