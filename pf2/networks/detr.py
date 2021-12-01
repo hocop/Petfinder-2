@@ -45,7 +45,9 @@ class PetDETR(nn.Module):
         x = self.out_layer(x)
 
         # Scale
-        out = torch.sigmoid(x[:, 0]) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
+        a = self.regression_margin_bot
+        b = self.regression_margin_top
+        out = torch.sigmoid(x) * (99 + a + b) + 1 - a
         return out
 
 

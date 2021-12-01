@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import pytorch_lightning as pl
 import timm
-
+import copy
 
 from .networks import SWIN, PetDETR
 from .losses import RegressionLogLossWithMargin, HingeLoss, WeightedLoss
@@ -37,15 +37,21 @@ class LitPet(pl.LightningModule):
                 dropout_2=self.hparams.swin_dropout_2,
                 attn_drop=self.hparams.swin_attn_drop,
                 freeze_layers=self.hparams.swin_freeze_layers,
-                regression_margin=self.hparams.regression_margin,
+                regression_margin_bot=self.hparams.regression_margin_bot,
+                regression_margin_top=self.hparams.regression_margin_top,
             )
         elif self.hparams.model_type == 'detr':
             self.pet_net = PetDETR(
                 num_boxes=self.hparams.detr_num_boxes,
-                regression_margin=self.hparams.regression_margin,
+                regression_margin_bot=self.hparams.regression_margin_bot,
+                regression_margin_top=self.hparams.regression_margin_top,
             )
 
-        self.loss_log = RegressionLogLossWithMargin(1, 100, self.hparams.regression_margin)
+        self.loss_log = RegressionLogLossWithMargin(
+            1, 100,
+            self.hparams.regression_margin_bot,
+            self.hparams.regression_margin_top,
+        )
         self.loss_hinge = HingeLoss(self.hparams.hinge_margin)
 
         self.loss_fn = WeightedLoss(
@@ -56,13 +62,15 @@ class LitPet(pl.LightningModule):
         self.rmse_score = 1000.0
         self.rmse_list = []
         self.top3_avg = None
+        self.best_weights = None
 
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Model Parameters")
         parser.add_argument('--image_size', type=int, default=None)
         parser.add_argument('--weight_decay', type=float, default=None)
-        parser.add_argument('--regression_margin', type=float, default=None)
+        parser.add_argument('--regression_margin_top', type=float, default=None)
+        parser.add_argument('--regression_margin_bot', type=float, default=None)
         parser.add_argument('--model_type', type=str, default=None)
         parser.add_argument('--swin_model_name', type=str, default=None)
         parser.add_argument('--swin_num_image_neurons', type=int, default=None)
@@ -101,7 +109,8 @@ class LitPet(pl.LightningModule):
         if self.hparams.optimizer_type == 'adam':
             optimizer = torch.optim.Adam(
                 self.pet_net.parameters(),
-                lr=self.hparams.learning_rate
+                lr=self.hparams.learning_rate,
+                weight_decay=self.hparams.weight_decay,
             )
         elif self.hparams.optimizer_type == 'sgd':
             optimizer = torch.optim.SGD(
@@ -139,8 +148,6 @@ class LitPet(pl.LightningModule):
         return rnd_idx
 
     def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, rand_index=None):
-        assert self.hparams.mixup_alpha > 0, "alpha should be larger than 0"
-        assert x.size(0) > 1, "Mixup cannot be applied to a single instance."
 
         if rand_index is None:
             rand_index = torch.randperm(x.size()[0])
@@ -186,7 +193,7 @@ class LitPet(pl.LightningModule):
             self.current_epoch >= self.hparams.max_epochs - self.hparams.freeze_backend_last_epochs
         )
 
-        if np.random.random() < self.hparams.mix_proba:
+        if np.random.random() < self.hparams.mix_proba and batch['image'].size()[0] > 1:
             # Mixup
             mixed_x, mixed_feats, target_a, target_b, lam = self.mixup(
                 batch['image'], batch['features'], batch['target'],
@@ -194,23 +201,26 @@ class LitPet(pl.LightningModule):
             )
             # Predict pawplarity
             pred, image_features = self(mixed_x, mixed_feats, freeze_backend=freeze_backend)
+            pred = pred.mean(1)
             # Supervision loss
-            loss_a = self.loss_log(pred.mean(1), target_a).mean()
-            loss_b = self.loss_log(pred.mean(1), target_b).mean()
+            loss_a = self.loss_log(pred, target_a).mean()
+            loss_b = self.loss_log(pred, target_b).mean()
             loss = lam * loss_a + (1 - lam) * loss_b
         else:
             # Predict pawplarity
             pred, image_features = self(batch['image'], batch['features'], freeze_backend=freeze_backend)
+            pred = pred.mean(1)
+            # Clipping mask
+            mask_clip_top = (batch['target'] == 100) & (pred.detach() > 100)
+            mask_clip_bot = (batch['target'] == 1) & (pred.detach() < 1)
+            mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
             # Supervision loss
-            loss = self.loss_fn(pred.mean(1), batch['target']).mean()
-
-        # Weight decay
-        loss = loss + self.pet_net.l2() * self.hparams.weight_decay
+            loss = (self.loss_fn(pred, batch['target']) * mask).mean()
 
         log_dict['train/loss'] = loss
 
         # Measure MSE
-        log_dict['train/mse'] = ((pred.mean(1) - batch['target'])**2).mean()
+        log_dict['train/mse'] = ((pred - batch['target'])**2).mean()
 
         if loss != loss:
             print('ERROR: NaN loss!')
@@ -222,23 +232,18 @@ class LitPet(pl.LightningModule):
 
         return loss
 
-    def make_prediction(self, batch):
-        # Make darker and lighter versions
-        dark = batch['image'] * (1 - self.hparams.prediction_lightness_delta)
-        light = (batch['image'] * (1 + self.hparams.prediction_lightness_delta)).clip(0, 1)
-
+    def make_prediction_fast(self, batch):
         # Predict pawplarity
         inp_image = torch.cat([
-            dark, dark.flip(-1),
-            light, light.flip(-1),
+            batch['image'], batch['image'].flip(-1),
             batch['image_pet'], batch['image_pet'].flip(-1),
             batch['image_glob'], batch['image_glob'].flip(-1),
         ], 0)
-        int_feats = batch['features'].repeat([8, 1])
+        int_feats = batch['features'].repeat([6, 1])
         with torch.no_grad():
             pred, image_features = self(inp_image, int_feats)
             pred = pred.mean(1)
-        pred = pred.view([8, batch['image'].shape[0]])
+        pred = pred.view([6, batch['image'].shape[0]])
 
         # Average
         a = self.hparams.prediction_orig_weight
@@ -248,12 +253,44 @@ class LitPet(pl.LightningModule):
         a = a / s
         b = b / s
         c = c / s
-        pred = a * pred[:4].mean(0) + b * pred[4:6].mean(0) + c * pred[6:].mean(0)
+        pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
+
+        return pred
+
+    def make_prediction(self, batch):
+        # Concatenate images
+        inp_image = torch.cat([
+            batch['image'], batch['image'].flip(-1),
+            batch['image_pet'], batch['image_pet'].flip(-1),
+            batch['image_glob'], batch['image_glob'].flip(-1),
+        ], 0)
+        int_feats = batch['features'].repeat([6, 1])
+        
+        # Make darker and lighter versions
+        dark = (inp_image * (1 - self.hparams.prediction_lightness_delta)).clip(0, 1)
+        light = (inp_image * (1 + self.hparams.prediction_lightness_delta)).clip(0, 1)
+        
+        # Predict pawpularity
+        with torch.no_grad():
+            pred_dark, image_features_dark = self(dark, int_feats)
+            pred_light, image_features_light = self(light, int_feats)
+            pred = 0.5 * (pred_dark.mean(1) + pred_light.mean(1))
+        pred = pred.view([6, batch['image'].shape[0]])
+
+        # Average
+        a = self.hparams.prediction_orig_weight
+        b = self.hparams.prediction_pet_crop_weight
+        c = self.hparams.prediction_glob_crop_weight
+        s = a + b + c
+        a = a / s
+        b = b / s
+        c = c / s
+        pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
 
         return pred
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
-        pred = self.make_prediction(batch)
+        pred = self.make_prediction_fast(batch)
         pred = pred.clamp(1, 100)
         return {
             'pred': pred.detach().cpu().numpy(),
@@ -310,10 +347,29 @@ class LitPet(pl.LightningModule):
                 traced_graph.save(self.model_path)
                 self.pet_net.cuda()
                 torch.cuda.empty_cache()
+                print()
                 print('Saved model to', self.model_path)
 
             # Remember RMSE
             self.rmse_score = rmse_score
+
+            # Remember weights
+            self.pet_net.cpu()
+            self.best_weights = copy.deepcopy(self.pet_net.state_dict())
+            self.pet_net.cuda()
+
+        # Load best model
+        if (
+            (self.current_epoch == self.hparams.max_epochs - self.hparams.freeze_backend_last_epochs - 1)
+            and
+            self.hparams.freeze_backend_last_epochs > 0
+            and
+            not self.trainer.sanity_checking
+        ):
+            self.pet_net.load_state_dict(self.best_weights)
+            # self.pet_net.pet_net.requires_grad_(False)
+            print()
+            print('Loaded model from previous best epoch')
 
         # Log average pawpularity metrics
         metrics = {

@@ -14,10 +14,12 @@ class SWIN(nn.Module):
         dropout_2,
         attn_drop,
         freeze_layers,
-        regression_margin
+        regression_margin_bot,
+        regression_margin_top,
     ):
         super().__init__()
-        self.regression_margin = regression_margin
+        self.regression_margin_bot = regression_margin_bot
+        self.regression_margin_top = regression_margin_top
 
         # Normalization layer
         self.norm_input = torchvision.transforms.Normalize(
@@ -55,6 +57,10 @@ class SWIN(nn.Module):
 
         self.out_layer = nn.Linear(num_image_neurons + 14, 1)
 
+        # Initialize weights
+        # nn.init.xavier_uniform_(self.image_dense_layer[0].weight)
+        # nn.init.xavier_uniform_(self.out_layer.weight)
+
     def forward(self, image, features, freeze_backend=torch.tensor(False)):
         # Normalize input
         image = self.norm_input(image)
@@ -78,7 +84,9 @@ class SWIN(nn.Module):
         x = self.out_layer(x)
 
         # Scale
-        out = torch.sigmoid(x) * (99 + self.regression_margin * 2) + 1 - self.regression_margin
+        a = self.regression_margin_bot
+        b = self.regression_margin_top
+        out = torch.sigmoid(x) * (99 + a + b) + 1 - a
         return out, image_features
     
     def l2(self):

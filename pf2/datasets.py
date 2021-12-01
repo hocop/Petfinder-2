@@ -24,8 +24,8 @@ class PetDataModule(pl.LightningDataModule):
 
         # Clear up training data
         #mask = (self.train_table.Pawpularity < 10) | (self.train_table.Pawpularity == 100)
-        mask = self.train_table.Pawpularity == 100
-        self.train_table = self.train_table[~mask]
+        # mask = self.train_table.Pawpularity == 100
+        # self.train_table = self.train_table[~mask]
 
         self.train_dataset = None
         self.val_datasets = None

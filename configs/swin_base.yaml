@@ -6,7 +6,8 @@ choose_categories: 'all'
 
 # Model parameters
 image_size: 224
-regression_margin: 1.594
+regression_margin_top: 10
+regression_margin_bot: 1.6
 model_type: swin
 swin_model_name: swin_base_patch4_window7_224
 swin_num_image_neurons: 2000
@@ -63,13 +64,14 @@ learning_rate: 0.000025
 scheduler_type: none
 scheduler_cos_t_max: 1000
 freeze_backend_steps: 40
-freeze_backend_last_epochs: 0
+freeze_backend_last_epochs: 6
 
 # Training parameters
 num_folds: 10
 max_epochs: 16
 batch_size: 24
-weight_decay: 0.00003
+weight_decay: 0.00001
+load_from: saved_model/pf_old_epochs2/fold_0.pt
 
 # Hardware
 cpus: 6

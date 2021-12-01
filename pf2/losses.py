@@ -4,20 +4,28 @@ import torch.nn as nn
 
 
 class RegressionLogLossWithMargin(nn.Module):
-    def __init__(self, vmin, vmax, regression_margin):
+    def __init__(
+        self,
+        vmin,
+        vmax,
+        regression_margin_bot,
+        regression_margin_top
+    ):
         super().__init__()
 
         self.vmin = vmin
         self.vmax = vmax
-        self.regression_margin = regression_margin
+        self.regression_margin_bot = regression_margin_bot
+        self.regression_margin_top = regression_margin_top
 
         self.bce_loss = nn.BCELoss(reduction='none')
 
     def forward(self, pred, target):
-        m = self.regression_margin
-        z = (self.vmax - self.vmin + 2 * self.regression_margin)
-        pred_0_1 = (pred - self.vmin + m) / z
-        target_0_1 = (target - self.vmin + m) / z
+        a = self.regression_margin_bot
+        b = self.regression_margin_top
+        z = (self.vmax - self.vmin + a + b)
+        pred_0_1 = (pred - self.vmin + a) / z
+        target_0_1 = (target - self.vmin + a) / z
 
         return self.bce_loss(pred_0_1, target_0_1) * z
 

@@ -73,7 +73,13 @@ def main(config):
             **config.__dict__
         )
         if config.load_from is not None:
-            lit_module = lit_module.load_from_checkpoint(checkpoint_path=config.load_from)
+            pet_net = torch.jit.load(config.load_from)
+            lit_module.pet_net.pet_net.load_state_dict(pet_net.pet_net.state_dict())
+            # lit_module.pet_net.load_state_dict(pet_net.state_dict())
+            print()
+            print('Loaded', config.load_from)
+            print()
+            del pet_net
 
         # Create trainer
         trainer = pl.Trainer.from_argparse_args(
