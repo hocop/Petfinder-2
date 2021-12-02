@@ -42,7 +42,7 @@ cutmix_proba: 0.02
 old_domain_prob: 0.0
 
 # Loss
-bce_weight: 0.67
+bce_weight: 1.0
 hinge_margin: 12.315
 
 # Predictions

@@ -367,7 +367,7 @@ class LitPet(pl.LightningModule):
             not self.trainer.sanity_checking
         ):
             self.pet_net.load_state_dict(self.best_weights)
-            # self.pet_net.pet_net.requires_grad_(False)
+            self.pet_net.pet_net.requires_grad_(False)
             print()
             print('Loaded model from previous best epoch')
 
