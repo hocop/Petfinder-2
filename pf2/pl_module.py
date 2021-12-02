@@ -139,12 +139,21 @@ class LitPet(pl.LightningModule):
         x, image_features = self.pet_net(image, features, freeze_backend=freeze_backend)
         return x, image_features
 
-    def rand_index(self, cat_detected):
+    def rand_index(self, cat_detected, target):
+        # Don't mixup label 100 with others
+        is_border = (target == 100).to(torch.float32)
+        not_border = 1 - is_border
+        mask_border = is_border[:, None] * is_border[None, :] + not_border[:, None] * not_border[None, :]
+
+        # Don't mixup cats with dogs
         dog_detected = 1 - cat_detected
-        mask = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
-        # print('mask', mask.shape)
+        mask_pet = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
+
+        # Generate random indeces
+        mask = mask_pet * mask_border
         rnd = torch.rand(mask.shape, device=mask.device) * mask
         rnd_idx = torch.argmax(rnd, dim=1)
+
         return rnd_idx
 
     def mixup(self, x: torch.Tensor, feats: torch.Tensor, y: torch.Tensor, rand_index=None):
@@ -197,7 +206,7 @@ class LitPet(pl.LightningModule):
             # Mixup
             mixed_x, mixed_feats, target_a, target_b, lam = self.mixup(
                 batch['image'], batch['features'], batch['target'],
-                rand_index=self.rand_index(cat_detected),
+                rand_index=self.rand_index(cat_detected, batch['target']),
             )
             # Predict pawplarity
             pred, image_features = self(mixed_x, mixed_feats, freeze_backend=freeze_backend)
@@ -210,12 +219,8 @@ class LitPet(pl.LightningModule):
             # Predict pawplarity
             pred, image_features = self(batch['image'], batch['features'], freeze_backend=freeze_backend)
             pred = pred.mean(1)
-            # Clipping mask
-            mask_clip_top = (batch['target'] == 100) & (pred.detach() > 100)
-            mask_clip_bot = (batch['target'] == 1) & (pred.detach() < 1)
-            mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
             # Supervision loss
-            loss = (self.loss_fn(pred, batch['target']) * mask).mean()
+            loss = self.loss_fn(pred, batch['target']).mean()
 
         log_dict['train/loss'] = loss
 

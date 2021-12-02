@@ -9,7 +9,7 @@ class RegressionLogLossWithMargin(nn.Module):
         vmin,
         vmax,
         regression_margin_bot,
-        regression_margin_top
+        regression_margin_top,
     ):
         super().__init__()
 
@@ -27,7 +27,12 @@ class RegressionLogLossWithMargin(nn.Module):
         pred_0_1 = (pred - self.vmin + a) / z
         target_0_1 = (target - self.vmin + a) / z
 
-        return self.bce_loss(pred_0_1, target_0_1) * z
+        # Clip out-of-range predictions
+        mask_clip_top = (target == self.vmax) & (pred.detach() > self.vmax)
+        mask_clip_bot = (target == self.vmin) & (pred.detach() < self.vmin)
+        mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
+
+        return self.bce_loss(pred_0_1, target_0_1) * z * mask
 
 
 class HingeLoss(nn.Module):
