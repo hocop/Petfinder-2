@@ -28,9 +28,13 @@ class RegressionLogLossWithMargin(nn.Module):
         target_0_1 = (target - self.vmin + a) / z
 
         # Clip out-of-range predictions
-        mask_clip_top = (target == self.vmax) & (pred.detach() > self.vmax)
-        mask_clip_bot = (target == self.vmin) & (pred.detach() < self.vmin)
-        mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
+        mask_clip_top = (target >= self.vmax) & (pred.detach() >= self.vmax)
+        # mask_clip_bot = (target <= self.vmin) & (pred.detach() <= self.vmin)
+        # mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
+        mask = 1 - mask_clip_top.to(torch.float32)
+
+        if (1 - mask).sum() > 0:
+            print('pred', pred)
 
         return self.bce_loss(pred_0_1, target_0_1) * z * mask
 

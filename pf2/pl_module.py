@@ -29,6 +29,7 @@ class LitPet(pl.LightningModule):
         self.model_path = model_path
 
         # Make net
+        torch.manual_seed(self.hparams.model_seed)
         if self.hparams.model_type == 'swin':
             self.pet_net = SWIN(
                 model_name=self.hparams.swin_model_name,
@@ -46,6 +47,7 @@ class LitPet(pl.LightningModule):
                 regression_margin_bot=self.hparams.regression_margin_bot,
                 regression_margin_top=self.hparams.regression_margin_top,
             )
+        torch.manual_seed(self.hparams.random_seed)
 
         self.loss_log = RegressionLogLossWithMargin(
             1, 100,
@@ -79,9 +81,11 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--swin_attn_drop', type=float, default=None)
         parser.add_argument('--swin_freeze_layers', type=int, default=None)
         parser.add_argument('--detr_num_boxes', type=float, default=None)
+        parser.add_argument('--model_seed', type=int, default=None)
         # Loss
         parser.add_argument('--bce_weight', type=float, default=None)
         parser.add_argument('--hinge_margin', type=float, default=None)
+        parser.add_argument('--augtgt_coef', type=float, default=None)
         # Prediction
         parser.add_argument('--prediction_lightness_delta', type=float, default=None)
         parser.add_argument('--prediction_orig_weight', type=float, default=None)
@@ -141,16 +145,16 @@ class LitPet(pl.LightningModule):
 
     def rand_index(self, cat_detected, target):
         # Don't mixup label 100 with others
-        is_border = (target == 100).to(torch.float32)
-        not_border = 1 - is_border
-        mask_border = is_border[:, None] * is_border[None, :] + not_border[:, None] * not_border[None, :]
+        # is_border = (target == 100).to(torch.float32)
+        # not_border = 1 - is_border
+        # mask_border = is_border[:, None] * is_border[None, :] + not_border[:, None] * not_border[None, :]
 
         # Don't mixup cats with dogs
         dog_detected = 1 - cat_detected
         mask_pet = cat_detected[:, None] * cat_detected[None, :] + dog_detected[:, None] * dog_detected[None, :]
 
         # Generate random indeces
-        mask = mask_pet * mask_border
+        mask = mask_pet# * mask_border
         rnd = torch.rand(mask.shape, device=mask.device) * mask
         rnd_idx = torch.argmax(rnd, dim=1)
 
@@ -201,6 +205,14 @@ class LitPet(pl.LightningModule):
             or
             self.current_epoch >= self.hparams.max_epochs - self.hparams.freeze_backend_last_epochs
         )
+
+        # Maybe augment target
+        rate = torch.ones_like(batch['target']) / (self.hparams.regression_margin_top * max(self.hparams.augtgt_coef, 0.01))
+        m = torch.distributions.exponential.Exponential(rate)
+        addition = m.sample().clip(0, self.hparams.regression_margin_top)
+        if self.hparams.augtgt_coef > 0:
+            mask_100 = (batch['target'] == 100).to(torch.float32)
+            batch['target'] = batch['target'] + addition * mask_100
 
         if np.random.random() < self.hparams.mix_proba and batch['image'].size()[0] > 1:
             # Mixup
@@ -340,21 +352,8 @@ class LitPet(pl.LightningModule):
         mse_score_cats = (((predictions - targets)**2) * cat_detected).sum() / cat_detected.sum()
         rmse_score_cats = np.sqrt(mse_score_cats)
 
-        # Save best model
+        # Remember best model
         if rmse_score < self.rmse_score and not self.trainer.sanity_checking:
-            if self.model_path is not None:
-                model = self.pet_net.eval().cpu()
-                with torch.jit.optimized_execution(True):
-                    traced_graph = torch.jit.script(
-                        model,
-                        torch.randn(1, 3, self.hparams.image_size, self.hparams.image_size, device='cpu')
-                    )
-                traced_graph.save(self.model_path)
-                self.pet_net.cuda()
-                torch.cuda.empty_cache()
-                print()
-                print('Saved model to', self.model_path)
-
             # Remember RMSE
             self.rmse_score = rmse_score
 
@@ -363,7 +362,7 @@ class LitPet(pl.LightningModule):
             self.best_weights = copy.deepcopy(self.pet_net.state_dict())
             self.pet_net.cuda()
 
-        # Load best model
+        # Restore best model
         if (
             (self.current_epoch == self.hparams.max_epochs - self.hparams.freeze_backend_last_epochs - 1)
             and
@@ -375,6 +374,21 @@ class LitPet(pl.LightningModule):
             self.pet_net.pet_net.requires_grad_(False)
             print()
             print('Loaded model from previous best epoch')
+
+        # Save best model to disk
+        if self.model_path is not None and self.current_epoch == self.hparams.max_epochs - 1:
+            self.pet_net.load_state_dict(self.best_weights)
+            model = self.pet_net.eval().cpu()
+            with torch.jit.optimized_execution(True):
+                traced_graph = torch.jit.script(
+                    model,
+                    torch.randn(1, 3, self.hparams.image_size, self.hparams.image_size, device='cpu')
+                )
+            traced_graph.save(self.model_path)
+            self.pet_net.cuda()
+            torch.cuda.empty_cache()
+            print()
+            print('Saved model to', self.model_path)
 
         # Log average pawpularity metrics
         metrics = {

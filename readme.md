@@ -16,3 +16,4 @@ python scripts/train.py --config configs/pf2.yaml --gpus 1 --wandb_project pf2 -
 * many heads. avg for prediction, min for mixup
 * add original to slow predict
 * resize with crop
+* reload optimizer when freeze

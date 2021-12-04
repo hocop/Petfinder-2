@@ -15,6 +15,7 @@ swin_dropout_1: 0.436
 swin_dropout_2: 0.640
 swin_attn_drop: 0 #0.01968
 swin_freeze_layers: 3
+model_seed: 42
 
 # Augmentation
 freeze_augmentations: 4.85
@@ -42,8 +43,9 @@ cutmix_proba: 0.02
 old_domain_prob: 0.0
 
 # Loss
-bce_weight: 0.67
+bce_weight: 1.0
 hinge_margin: 12.315
+augtgt_coef: 0
 
 # Predictions
 prediction_lightness_delta: 0.08
