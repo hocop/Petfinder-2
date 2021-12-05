@@ -73,7 +73,7 @@ num_folds: 10
 max_epochs: 16
 batch_size: 24
 weight_decay: 0.00001
-load_from: saved_model/pf_old_epochs2/fold_0.pt
+load_from: pretrained_model/pf_old_epochs2/fold_0.pt
 
 # Hardware
 cpus: 6

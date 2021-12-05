@@ -14,3 +14,4 @@ dist
 build
 onnx_output
 saved_model
+pretrained_model

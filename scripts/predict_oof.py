@@ -90,7 +90,8 @@ def main(config):
     submission = pd.DataFrame(columns=['Id', 'Pawpularity'])
     submission['Id'] = data_train['Id']
     submission['Pawpularity'] = predictions
-    submission.to_csv('oof_prediction.csv', index=False)
+    save_path = os.path.join('saved_model', config.name, 'oof_prediction.csv')
+    submission.to_csv(save_path, index=False)
 
 
 if __name__ == '__main__':

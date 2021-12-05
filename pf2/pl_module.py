@@ -222,15 +222,22 @@ class LitPet(pl.LightningModule):
             )
             # Predict pawplarity
             pred, image_features = self(mixed_x, mixed_feats, freeze_backend=freeze_backend)
-            pred = pred.mean(1)
+            # Distribute predictions
+            if lam > 0.5:
+                pred_a = pred[:, 0]
+                pred_b = pred[:, -1]
+            else:
+                pred_a = pred[:, -1]
+                pred_b = pred[:, 0]
             # Supervision loss
-            loss_a = self.loss_log(pred, target_a).mean()
-            loss_b = self.loss_log(pred, target_b).mean()
+            loss_a = self.loss_log(pred_a, target_a).mean()
+            loss_b = self.loss_log(pred_b, target_b).mean()
             loss = lam * loss_a + (1 - lam) * loss_b
+            pred = pred[:, 0]
         else:
             # Predict pawplarity
             pred, image_features = self(batch['image'], batch['features'], freeze_backend=freeze_backend)
-            pred = pred.mean(1)
+            pred = pred[:, 0]
             # Supervision loss
             loss = self.loss_fn(pred, batch['target']).mean()
 
@@ -252,15 +259,15 @@ class LitPet(pl.LightningModule):
     def make_prediction_fast(self, batch):
         # Predict pawplarity
         inp_image = torch.cat([
-            batch['image'], batch['image'].flip(-1),
-            batch['image_pet'], batch['image_pet'].flip(-1),
-            batch['image_glob'], batch['image_glob'].flip(-1),
+            batch['image'],# batch['image'].flip(-1),
+            batch['image_pet'],# batch['image_pet'].flip(-1),
+            batch['image_glob'],# batch['image_glob'].flip(-1),
         ], 0)
-        int_feats = batch['features'].repeat([6, 1])
+        int_feats = batch['features'].repeat([3, 1])
         with torch.no_grad():
             pred, image_features = self(inp_image, int_feats)
-            pred = pred.mean(1)
-        pred = pred.view([6, batch['image'].shape[0]])
+            pred = pred[:, 0]
+        pred = pred.view([3, batch['image'].shape[0]])
 
         # Average
         a = self.hparams.prediction_orig_weight
@@ -270,7 +277,8 @@ class LitPet(pl.LightningModule):
         a = a / s
         b = b / s
         c = c / s
-        pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
+        # pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
+        pred = a * pred[0] + b * pred[1] + c * pred[2]
 
         return pred
 
@@ -289,9 +297,11 @@ class LitPet(pl.LightningModule):
         
         # Predict pawpularity
         with torch.no_grad():
-            pred_dark, image_features_dark = self(dark, int_feats)
-            pred_light, image_features_light = self(light, int_feats)
-            pred = 0.5 * (pred_dark.mean(1) + pred_light.mean(1))
+            # Predict with different lightness
+            dark_pred, image_features_dark = self(dark, int_feats)
+            light_pred, image_features_light = self(light, int_feats)
+            # Average
+            pred = (dark_pred[:, 0] + light_pred[:, 0]) / 2
         pred = pred.view([6, batch['image'].shape[0]])
 
         # Average
@@ -307,7 +317,9 @@ class LitPet(pl.LightningModule):
         return pred
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
-        pred = self.make_prediction_fast(batch)
+        # pred = self.make_prediction_fast(batch)
+        with torch.no_grad():
+            pred = self(batch['image'], batch['features'])[0][:, 0]
         pred = pred.clamp(1, 100)
         return {
             'pred': pred.detach().cpu().numpy(),
