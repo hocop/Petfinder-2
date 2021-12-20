@@ -5,39 +5,78 @@ data_path: /home/ruslan/data/datasets_ssd/kaggle/petfinder-pawpularity-score/
 choose_categories: 'all'
 
 # Model parameters
-image_size: 384
-regression_margin: 1.594
+image_size: 224
+regression_margin_top: 10
+regression_margin_bot: 1.6
 model_type: swin
-swin_model_name: swin_large_patch4_window12_384
+swin_model_name: swin_large_patch4_window7_224
 swin_num_image_neurons: 2000
-swin_dropout_1: 0.4209
-swin_dropout_2: 0.6479
-swin_attn_drop: 0.01968
+swin_dropout_1: 0.3
+swin_dropout_2: 0.7
+swin_attn_drop: 0.06
+swin_attn_drop_final: 0.2
 swin_freeze_layers: 3
+model_seed: 50
 
 # Augmentation
-replace_bg_prob: 0.1954
-glob_crop_prob: 0.531
-pet_crop_prob: 0.3464
-freeze_augmentations: 0.08384
+freeze_augmentations: 4.85
+replace_bg_prob: 0.19
+glob_crop_prob: 0.4
+pet_crop_prob: 0.2709
+aug_brightness_lim: 0.136
+aug_contrast_lim: 0.366
+aug_hue_lim: 0.08
+aug_sat_lim: 0.33
+aug_val_lim: 0.22
+aug_brcon_prob: 0.8
+aug_hsv_prob: 0.63
+aug_gray_prob: 0.11
+aug_gblur_prob: 0.0
+aug_affine_prob: 0.2
+
+# Mixup
+mix_proba: 0.7
+mixup_alpha: 0.11
+cutmix_alpha: 1.0
+cutmix_proba: 0.02
+
+# Old domain
+old_domain_prob: 0.0
 
 # Loss
-bce_weight_cat: 0.7446
-bce_weight_dog: 0.8141
+bce_weight: 1.0
 hinge_margin: 12.315
+augtgt_coef: 0
 
 # Predictions
-prediction_lightness_delta: 0.06269
-prediction_pet_crop_weight: 0.5195
-prediction_glob_crop_weight: 0.4225
+prediction_lightness_delta: 0.08
+prediction_orig_weight: 1.0
+prediction_pet_crop_weight: 0.5
+prediction_glob_crop_weight: 1.0
+
+# Optimizer params
+optimizer_type: adam
+learning_rate: 0.000025
+# optimizer_type: sgd
+# learning_rate: 0.000025
+# sgd_momentum: 0.1
+# sgd_dampening: 0.1
+# sgd_nesterov: true
+
+# Schedule
+scheduler_type: steplr
+scheduler_cos_t_max: 1000
+scheduler_steplr_milestones: [8]
+scheduler_steplr_gamma: 0.5
+freeze_backend_steps: 40
+freeze_backend_last_epochs: 6
 
 # Training parameters
 num_folds: 10
-max_epochs: 6
-batch_size: 10
-learning_rate: 0.00002583
-weight_decay: 0.0007742
-mixup_proba: -1
+max_epochs: 16
+batch_size: 24
+weight_decay: 0.00001
+load_from: pretrained_model/large/fold_0.pt
 
 # Hardware
 cpus: 6
@@ -46,3 +85,5 @@ gpus: 1
 # Run-type-specific
 random_seed: 42
 wandb_project: pf2
+max_folds: -1
+save_to: saved_model

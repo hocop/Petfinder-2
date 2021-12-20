@@ -1,2 +1,2 @@
-from .swin import SWIN
-from .detr import PetDETR
+from .swin import *
+from .detr import *

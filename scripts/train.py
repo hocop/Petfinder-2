@@ -59,7 +59,7 @@ def main(config):
 
         # Save path
         if config.save == 1:
-            model_path = os.path.join('saved_model', config.name)
+            model_path = os.path.join(config.save_to, config.name)
             if not os.path.isdir(model_path):
                 os.makedirs(model_path)
             model_path = os.path.join(model_path, f'fold_{fold}.pt')
@@ -72,9 +72,11 @@ def main(config):
             model_path=model_path,
             **config.__dict__
         )
+
+        # Load pretrained weights
         if config.load_from is not None:
             pet_net = torch.jit.load(config.load_from)
-            lit_module.pet_net.pet_net.load_state_dict(pet_net.pet_net.state_dict())
+            lit_module.pet_net.pet_net.load_state_dict(pet_net.pet_net.state_dict(), strict=False)
             # lit_module.pet_net.load_state_dict(pet_net.state_dict())
             print()
             print('Loaded', config.load_from)
@@ -145,6 +147,9 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--max_folds', type=int, default=None
+    )
+    parser.add_argument(
+        '--save_to', type=str, default='saved_model'
     )
 
     parser = pf2.pl_module.LitPet.add_argparse_args(parser)

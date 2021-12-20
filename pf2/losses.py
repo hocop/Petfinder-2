@@ -33,8 +33,8 @@ class RegressionLogLossWithMargin(nn.Module):
         # mask = 1 - (mask_clip_top | mask_clip_bot).to(torch.float32)
         mask = 1 - mask_clip_top.to(torch.float32)
 
-        if (1 - mask).sum() > 0:
-            print('pred', pred)
+        # if (1 - mask).sum() > 0:
+        #     print('pred', pred)
 
         return self.bce_loss(pred_0_1, target_0_1) * z * mask
 

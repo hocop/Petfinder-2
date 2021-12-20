@@ -40,8 +40,11 @@ def main(config):
 
     kf = StratifiedKFold(config.num_folds, shuffle=True, random_state=config.random_seed)
 
-    predictions = data_train['Pawpularity'].copy()
-    predictions.iloc[:] = 0.0
+    pred_columns = [
+        'image', 'image_flip', 'pet', 'pet_flip', 'glob', 'glob_flip',
+    ]
+    predictions = pd.DataFrame(columns=['Id', *pred_columns])
+    predictions['Id'] = data_train['Id'].copy()
 
     for fold, (train_index, val_index) in enumerate(kf.split(data_train, bins)):
         print('#' * 50)
@@ -79,19 +82,18 @@ def main(config):
         fold_preds = np.concatenate(fold_preds, 0)
 
         # Record predictions
-        predictions.iloc[val_index] = fold_preds
-
-    # print(predictions)
-    residual = predictions.values - data_train['Pawpularity'].values
-    rmse_score = np.sqrt(np.mean(residual**2))
-    print('RMSE', rmse_score)
+        predictions.loc[val_index, pred_columns] = fold_preds
 
     # Save predictions
-    submission = pd.DataFrame(columns=['Id', 'Pawpularity'])
-    submission['Id'] = data_train['Id']
-    submission['Pawpularity'] = predictions
     save_path = os.path.join('saved_model', config.name, 'oof_prediction.csv')
-    submission.to_csv(save_path, index=False)
+    predictions.to_csv(save_path, index=False)
+
+    print(predictions)
+
+    for col in pred_columns:
+        residual = predictions[col] - data_train['Pawpularity']
+        rmse_score = np.sqrt(np.mean(residual**2))
+        print(col, 'RMSE:', rmse_score)
 
 
 if __name__ == '__main__':

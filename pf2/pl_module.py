@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import timm
 import copy
 
-from .networks import SWIN, PetDETR
+from .networks import SWIN, SWIN_simple, PetDETR
 from .losses import RegressionLogLossWithMargin, HingeLoss, WeightedLoss
 
 
@@ -36,6 +36,16 @@ class LitPet(pl.LightningModule):
                 num_image_neurons=self.hparams.swin_num_image_neurons,
                 dropout_1=self.hparams.swin_dropout_1,
                 dropout_2=self.hparams.swin_dropout_2,
+                attn_drop=self.hparams.swin_attn_drop,
+                attn_drop_final=self.hparams.swin_attn_drop_final,
+                freeze_layers=self.hparams.swin_freeze_layers,
+                regression_margin_bot=self.hparams.regression_margin_bot,
+                regression_margin_top=self.hparams.regression_margin_top,
+            )
+        elif self.hparams.model_type == 'swin_simple':
+            self.pet_net = SWIN_simple(
+                model_name=self.hparams.swin_model_name,
+                dropout_1=self.hparams.swin_dropout_1,
                 attn_drop=self.hparams.swin_attn_drop,
                 freeze_layers=self.hparams.swin_freeze_layers,
                 regression_margin_bot=self.hparams.regression_margin_bot,
@@ -79,6 +89,7 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--swin_dropout_1', type=float, default=None)
         parser.add_argument('--swin_dropout_2', type=float, default=None)
         parser.add_argument('--swin_attn_drop', type=float, default=None)
+        parser.add_argument('--swin_attn_drop_final', type=float, default=None)
         parser.add_argument('--swin_freeze_layers', type=int, default=None)
         parser.add_argument('--detr_num_boxes', type=float, default=None)
         parser.add_argument('--model_seed', type=int, default=None)
@@ -102,6 +113,8 @@ class LitPet(pl.LightningModule):
         parser.add_argument('--freeze_backend_last_epochs', type=int, default=None)
         parser.add_argument('--scheduler_type', type=str, default=None)
         parser.add_argument('--scheduler_cos_t_max', type=int, default=None)
+        parser.add_argument('--scheduler_steplr_milestones', nargs='*', type=int, default=None)
+        parser.add_argument('--scheduler_steplr_gamma', type=float, default=None)
         # Mixup
         parser.add_argument('--mix_proba', type=float, default=None)
         parser.add_argument('--mixup_alpha', type=float, default=None)
@@ -126,16 +139,22 @@ class LitPet(pl.LightningModule):
             )
         if self.hparams.scheduler_type == 'none':
             return optimizer
-        if self.hparams.scheduler_type == 'cos':
+        if self.hparams.scheduler_type == 'coslr':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=self.hparams.scheduler_cos_t_max,
+            )
+        if self.hparams.scheduler_type == 'steplr':
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer,
+                milestones=self.hparams.scheduler_steplr_milestones,
+                gamma=self.hparams.scheduler_steplr_gamma,
             )
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'step',
+                'interval': 'step' if self.hparams.scheduler_type == 'cos' else 'epoch',
             }
         }
 
@@ -302,24 +321,24 @@ class LitPet(pl.LightningModule):
             light_pred, image_features_light = self(light, int_feats)
             # Average
             pred = (dark_pred[:, 0] + light_pred[:, 0]) / 2
-        pred = pred.view([6, batch['image'].shape[0]])
+        pred = pred.view([6, batch['image'].shape[0]]).transpose(1, 0)
 
         # Average
-        a = self.hparams.prediction_orig_weight
-        b = self.hparams.prediction_pet_crop_weight
-        c = self.hparams.prediction_glob_crop_weight
-        s = a + b + c
-        a = a / s
-        b = b / s
-        c = c / s
-        pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
+        # a = self.hparams.prediction_orig_weight
+        # b = self.hparams.prediction_pet_crop_weight
+        # c = self.hparams.prediction_glob_crop_weight
+        # s = a + b + c
+        # a = a / s
+        # b = b / s
+        # c = c / s
+        # pred = a * pred[:2].mean(0) + b * pred[2:4].mean(0) + c * pred[4:].mean(0)
 
         return pred
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, mode='valid'):
-        # pred = self.make_prediction_fast(batch)
-        with torch.no_grad():
-            pred = self(batch['image'], batch['features'])[0][:, 0]
+        pred = self.make_prediction_fast(batch)
+        # with torch.no_grad():
+        #     pred = self(batch['image'], batch['features'])[0][:, 0]
         pred = pred.clamp(1, 100)
         return {
             'pred': pred.detach().cpu().numpy(),
@@ -373,6 +392,18 @@ class LitPet(pl.LightningModule):
             self.pet_net.cpu()
             self.best_weights = copy.deepcopy(self.pet_net.state_dict())
             self.pet_net.cuda()
+        elif not self.trainer.sanity_checking:
+            beta = 0.5 # how much to conserve current params
+            self.pet_net.cpu()
+            state_dict = dict(self.best_weights)
+            for name, current_param in self.pet_net.named_parameters():
+                if name in state_dict:
+                    state_dict[name].data.copy_(beta * current_param.data + (1 - beta) * state_dict[name].data)
+            self.pet_net.cuda()
+
+            self.pet_net.load_state_dict(state_dict)
+            print()
+            print('Averaged model from previous best epoch')
 
         # Restore best model
         if (
@@ -383,7 +414,6 @@ class LitPet(pl.LightningModule):
             not self.trainer.sanity_checking
         ):
             self.pet_net.load_state_dict(self.best_weights)
-            self.pet_net.pet_net.requires_grad_(False)
             print()
             print('Loaded model from previous best epoch')
 

@@ -9,13 +9,14 @@ image_size: 224
 regression_margin_top: 10
 regression_margin_bot: 1.6
 model_type: swin
-swin_model_name: swin_base_patch4_window7_224
+swin_model_name: swin_large_patch4_window7_224
 swin_num_image_neurons: 2000
 swin_dropout_1: 0.436
 swin_dropout_2: 0.640
-swin_attn_drop: 0 #0.01968
+swin_attn_drop: 0
+swin_attn_drop_final: 0
 swin_freeze_layers: 3
-model_seed: 42
+model_seed: 50
 
 # Augmentation
 freeze_augmentations: 4.85
@@ -63,8 +64,10 @@ learning_rate: 0.000025
 # sgd_nesterov: true
 
 # Schedule
-scheduler_type: none
+scheduler_type: steplr
 scheduler_cos_t_max: 1000
+scheduler_steplr_milestones: [8]
+scheduler_steplr_gamma: 0.5
 freeze_backend_steps: 40
 freeze_backend_last_epochs: 6
 
@@ -73,7 +76,7 @@ num_folds: 10
 max_epochs: 16
 batch_size: 24
 weight_decay: 0.00001
-load_from: saved_model/pf_old_epochs2/fold_0.pt
+load_from: pretrained_model/large/fold_0.pt
 
 # Hardware
 cpus: 6

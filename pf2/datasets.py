@@ -109,7 +109,7 @@ class PetDataModule(pl.LightningDataModule):
             ),
         ])
         self.train_dataset.augmentations_before_crop = augmentations
-        self.train_dataset.augmentations_after_crop = A.HorizontalFlip(p=0.5 * (1 - augs_coef))
+        self.train_dataset.augmentations_after_crop = A.HorizontalFlip(p=0.5)
         self.train_dataset.replace_bg_prob = self.config.replace_bg_prob * augs_coef
         self.train_dataset.glob_crop_prob = self.config.glob_crop_prob
         self.train_dataset.pet_crop_prob = self.config.pet_crop_prob
